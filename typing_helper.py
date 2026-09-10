@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v9(단어경계+노포커스) boot ===")
+debug("=== v10(UIA 캐럿추적) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -339,6 +339,43 @@ def caret_xy():
     try:
         pt=wintypes.POINT(); u32.GetCursorPos(ctypes.byref(pt)); return pt.x+12, pt.y+18
     except Exception: return None
+_caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으면 caret_xy 폴백)
+def caret_tracker():
+    # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
+    # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
+    global _caret_xy
+    try:
+        import comtypes, comtypes.client as _cc
+        try: comtypes.CoInitialize()
+        except Exception: pass
+        _cc.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import UIAutomationClient as _UIA
+        uia=_cc.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
+        TPID=_UIA.UIA_TextPatternId; ITP=_UIA.IUIAutomationTextPattern
+        debug("UIA 캐럿 추적 시작")
+    except Exception:
+        debug("UIA 불가(GetGUIThreadInfo/마우스 폴백):\n"+traceback.format_exc()); return
+    while True:
+        try:
+            if not S["items"]: time.sleep(0.08); continue
+            xy=None; el=uia.GetFocusedElement()
+            if el is not None:
+                try:                                   # 1순위: 텍스트 선택(=캐럿) 사각형
+                    tp=el.GetCurrentPattern(TPID)
+                    if tp:
+                        sel=tp.QueryInterface(ITP).GetSelection()
+                        if sel and sel.Length>0:
+                            v=list(sel.GetElement(0).GetBoundingRectangles())
+                            if len(v)>=4: xy=(int(v[0])+2, int(v[1]+v[3])+2)  # left, top+height
+                except Exception: pass
+                if xy is None:                          # 2순위: 포커스 요소 박스 왼쪽 아래
+                    try:
+                        r=el.CurrentBoundingRectangle
+                        if r.right>r.left: xy=(int(r.left)+6, int(r.bottom)+2)
+                    except Exception: pass
+            if xy: _caret_xy=xy
+        except Exception: pass
+        time.sleep(0.035)
 
 # ---- 수집 writer ----
 def _emit(mf,rf,han,raw,tag=""):
@@ -394,7 +431,7 @@ def _open(p):
 
 # ---- 오버레이 ----
 OV=None; OVLIST=None; OVHINT=None; _drawn_ver=-1
-_ov_xy=None; _ov_shown=False; _empty_ticks=0
+_ov_shown=False; _empty_ticks=0; _last_pos=None
 _ui_q=[]; _ui_lock=threading.Lock(); _TRAY=None
 def post_ui(fn):
     # 다른 스레드(트레이 등)가 Tk 작업을 Tk 메인루프에서 실행하도록 큐에 넣는다.
@@ -425,36 +462,36 @@ def build_overlay(root):
         u32.SetWindowLongW(gp,GWL_EXSTYLE,cur|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW)
     except Exception: debug("noactivate 실패:\n"+traceback.format_exc())
     OV.withdraw()
+def _place(xy):
+    x,y=xy; w=OV.winfo_reqwidth(); h=OV.winfo_reqheight()
+    sw=OV.winfo_screenwidth(); sh=OV.winfo_screenheight()
+    if x+w>sw: x=max(0,sw-w-4)
+    if y+h>sh: y=max(0,y-h-30)          # 아래 공간 없으면 캐럿 위쪽으로
+    OV.geometry(f"+{x}+{y}")
 def draw_overlay():
-    # 내용/위치만 갱신한다. 숨길지 여부는 overlay_tick 이 판단(깜빡임 방지).
-    global _ov_xy,_ov_shown
+    # 내용/위치 갱신. 숨김 판단은 overlay_tick.
+    global _ov_shown,_last_pos
     if not OV: return
     items=S["items"]
     if not items: return
-    xy=caret_xy() or _ov_xy            # 캐럿을 못 찾으면(Electron 등) 마지막 위치 재사용
+    xy=_caret_xy or caret_xy()          # UIA 추적값 우선, 없으면 Win32/마우스 폴백
     if not xy: return
-    _ov_xy=xy
     idx=S["idx"]
     if idx>=len(items): idx=len(items)-1
     OVLIST.delete(0,tk.END)
     for p in items: OVLIST.insert(tk.END,"  "+p)
     OVLIST.config(height=len(items), width=min(60,max(len(p) for p in items)+4))
     OVLIST.selection_clear(0,tk.END); OVLIST.selection_set(idx); OVLIST.see(idx)
-    OV.update_idletasks()
-    x,y=xy; w=OV.winfo_reqwidth(); h=OV.winfo_reqheight()
-    sw=OV.winfo_screenwidth(); sh=OV.winfo_screenheight()
-    if x+w>sw: x=max(0,sw-w-4)
-    if y+h>sh: y=max(0,y-h-26)         # 아래 공간이 없으면 캐럿 위쪽으로 띄운다
-    OV.geometry(f"+{x}+{y}")
-    if not _ov_shown: OV.deiconify(); OV.lift(); _ov_shown=True   # 이미 떠 있으면 재표시 안 함
+    OV.update_idletasks(); _place(xy); _last_pos=xy
+    if not _ov_shown: OV.deiconify(); OV.lift(); _ov_shown=True
 def _hide_ov():
     global _ov_shown
     if OV and _ov_shown: OV.withdraw(); _ov_shown=False
 def hide_overlay(): _hide_ov()
-_HIDE_TICKS=8   # 8 x 60ms ≈ 0.5초 동안 후보가 계속 비어야 숨긴다
+_HIDE_TICKS=10   # 10 x 25ms ≈ 0.25초 동안 후보가 계속 비어야 숨긴다
 def overlay_tick():
     # 오버레이/트레이 관련 Tk 작업은 전부 여기(메인루프)서만 한다.
-    global _drawn_ver,_empty_ticks
+    global _drawn_ver,_empty_ticks,_last_pos
     try:
         while True:                    # 다른 스레드가 요청한 UI 작업 처리
             with _ui_lock: fn=_ui_q.pop(0) if _ui_q else None
@@ -464,18 +501,20 @@ def overlay_tick():
         items=S["items"]; ver=S["ver"]
         if not ACOMP:
             _hide_ov(); _empty_ticks=0
-        elif items:                    # 후보 있음 -> 계속 노출(내용만 갱신)
+        elif items:                    # 후보 있음 -> 계속 노출
             _empty_ticks=0
             if ver!=_drawn_ver or not _ov_shown:
                 _drawn_ver=ver; draw_overlay()
+            elif _caret_xy and _caret_xy!=_last_pos:   # 내용 그대로, 캐럿만 이동 -> 따라가기
+                _place(_caret_xy); _last_pos=_caret_xy
         else:                          # 후보 없음
             _drawn_ver=ver
-            if S.get("close"): _hide_ov(); _empty_ticks=0     # Esc/삽입: 즉시
-            else:                                             # 편집 중 잠깐 빈 것: 유지 후 숨김
+            if S.get("close"): _hide_ov(); _empty_ticks=0
+            else:
                 _empty_ticks+=1
                 if _empty_ticks>=_HIDE_TICKS: _hide_ov()
     except Exception: debug("overlay 예외:\n"+traceback.format_exc())
-    if ROOT: ROOT.after(60,overlay_tick)
+    if ROOT: ROOT.after(25,overlay_tick)
 
 # ---- 트레이 아이콘 ----
 def _tray_image():
@@ -529,6 +568,7 @@ def run_ui():
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
     LISTENER.start(); debug("리스너 시작")
+    threading.Thread(target=caret_tracker,daemon=True).start()
 
     root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x880"); root.minsize(400,700)
     root.resizable(False,True); root.configure(bg="#f5f6f8")

@@ -2,4 +2,5 @@ pynput
 pyperclip
 pystray
 Pillow
+comtypes
 pyinstaller
