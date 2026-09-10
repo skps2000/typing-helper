@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v7(커서 위 목록) boot ===")
+debug("=== v8(오버레이 지속+트레이) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -24,6 +24,12 @@ try:
     debug(" imports OK")
 except Exception:
     debug("IMPORT 크래시:\n"+traceback.format_exc()); raise
+try:
+    import pystray
+    from PIL import Image as _PILImage, ImageDraw as _PILDraw
+    HAVE_TRAY=True; debug(" tray imports OK")
+except Exception:
+    HAVE_TRAY=False; debug(" tray 미탑재(무시)")
 
 APP_NAME="타이핑 도우미"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
@@ -192,7 +198,7 @@ _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
-S={"items":[],"idx":0,"pref":"","rem":"","ver":0}
+S={"items":[],"idx":0,"pref":"","rem":"","ver":0,"close":False}
 KBD=Controller(); LISTENER=None; ROOT=None
 VK_C,VK_V,VK_X,VK_TAB,VK_ESC=67,86,88,9,27
 VK_UP,VK_DOWN=38,40
@@ -244,10 +250,11 @@ def on_release(key):
     global _ctrl
     if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=False
 
-def _set_sug(items,pref,idx=0):
+def _set_sug(items,pref,idx=0,close=False):
     # ver를 '맨 마지막'에 올려야 그리는 쪽이 반쯤 갱신된 상태를 보지 않는다.
     S["items"]=items; S["pref"]=pref; S["idx"]=idx
     S["rem"]=items[idx][len(pref):] if items else ""
+    S["close"]=close   # True=즉시 숨김(Esc/삽입), False=잠깐 유지 후 숨김(편집 중 깜빡임 방지)
     S["ver"]+=1
 def _update_sug():
     if not ACOMP: _set_sug([],""); return
@@ -267,7 +274,7 @@ def do_insert():
     try: KBD.type(rem)
     except Exception: debug("insert fail:\n"+traceback.format_exc())
     time.sleep(0.03); _injecting=False
-    _cur.clear(); _set_sug([],"")
+    _cur.clear(); _set_sug([],"",close=True)
 
 def win_filter(msg, data):
     # suppress_event()는 값을 반환하지 않고 SuppressException(Exception 상속)을 '발생'시켜
@@ -284,7 +291,7 @@ def win_filter(msg, data):
     if vk==VK_TAB: threading.Thread(target=do_insert,daemon=True).start()
     elif vk==VK_UP: move_sel(-1)
     elif vk==VK_DOWN: move_sel(1)
-    elif vk==VK_ESC: _set_sug([],"")
+    elif vk==VK_ESC: _set_sug([],"",close=True)
     else: return
     LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
 
@@ -372,6 +379,11 @@ def _open(p):
 
 # ---- 오버레이 ----
 OV=None; OVLIST=None; OVHINT=None; _drawn_ver=-1
+_ov_xy=None; _ov_shown=False; _empty_ticks=0
+_ui_q=[]; _ui_lock=threading.Lock(); _TRAY=None
+def post_ui(fn):
+    # 다른 스레드(트레이 등)가 Tk 작업을 Tk 메인루프에서 실행하도록 큐에 넣는다.
+    with _ui_lock: _ui_q.append(fn)
 def build_overlay(root):
     global OV,OVLIST,OVHINT
     OV=tk.Toplevel(root); OV.overrideredirect(True); OV.attributes("-topmost",True)
@@ -387,11 +399,14 @@ def build_overlay(root):
     OVHINT.pack(fill="x",padx=1,pady=(0,1))
     OV.withdraw()
 def draw_overlay():
+    # 내용/위치만 갱신한다. 숨길지 여부는 overlay_tick 이 판단(깜빡임 방지).
+    global _ov_xy,_ov_shown
     if not OV: return
     items=S["items"]
-    if not items or not ACOMP: OV.withdraw(); return
-    xy=caret_xy()                      # 포커스 창의 캐럿 위치(없으면 마우스 근처로 폴백)
-    if not xy: OV.withdraw(); return
+    if not items: return
+    xy=caret_xy() or _ov_xy            # 캐럿을 못 찾으면(Electron 등) 마지막 위치 재사용
+    if not xy: return
+    _ov_xy=xy
     idx=S["idx"]
     if idx>=len(items): idx=len(items)-1
     OVLIST.delete(0,tk.END)
@@ -403,17 +418,62 @@ def draw_overlay():
     sw=OV.winfo_screenwidth(); sh=OV.winfo_screenheight()
     if x+w>sw: x=max(0,sw-w-4)
     if y+h>sh: y=max(0,y-h-26)         # 아래 공간이 없으면 캐럿 위쪽으로 띄운다
-    OV.geometry(f"+{x}+{y}"); OV.deiconify(); OV.lift()
+    OV.geometry(f"+{x}+{y}")
+    if not _ov_shown: OV.deiconify(); OV.lift(); _ov_shown=True   # 이미 떠 있으면 재표시 안 함
+def _hide_ov():
+    global _ov_shown
+    if OV and _ov_shown: OV.withdraw(); _ov_shown=False
+def hide_overlay(): _hide_ov()
+_HIDE_TICKS=8   # 8 x 60ms ≈ 0.5초 동안 후보가 계속 비어야 숨긴다
 def overlay_tick():
-    # 오버레이는 Tk 메인루프에서만 그린다. 다른 스레드는 S와 ver만 건드린다.
-    global _drawn_ver
+    # 오버레이/트레이 관련 Tk 작업은 전부 여기(메인루프)서만 한다.
+    global _drawn_ver,_empty_ticks
     try:
-        if S["ver"]!=_drawn_ver:
-            _drawn_ver=S["ver"]; draw_overlay()
+        while True:                    # 다른 스레드가 요청한 UI 작업 처리
+            with _ui_lock: fn=_ui_q.pop(0) if _ui_q else None
+            if not fn: break
+            try: fn()
+            except Exception: debug("ui_q 예외:\n"+traceback.format_exc())
+        items=S["items"]; ver=S["ver"]
+        if not ACOMP:
+            _hide_ov(); _empty_ticks=0
+        elif items:                    # 후보 있음 -> 계속 노출(내용만 갱신)
+            _empty_ticks=0
+            if ver!=_drawn_ver or not _ov_shown:
+                _drawn_ver=ver; draw_overlay()
+        else:                          # 후보 없음
+            _drawn_ver=ver
+            if S.get("close"): _hide_ov(); _empty_ticks=0     # Esc/삽입: 즉시
+            else:                                             # 편집 중 잠깐 빈 것: 유지 후 숨김
+                _empty_ticks+=1
+                if _empty_ticks>=_HIDE_TICKS: _hide_ov()
     except Exception: debug("overlay 예외:\n"+traceback.format_exc())
     if ROOT: ROOT.after(60,overlay_tick)
-def hide_overlay():
-    if OV: OV.withdraw()
+
+# ---- 트레이 아이콘 ----
+def _tray_image():
+    img=_PILImage.new("RGB",(64,64),(37,99,235))
+    d=_PILDraw.Draw(img)
+    d.rectangle([10,20,53,44],outline=(255,255,255),width=3)   # 키보드 느낌
+    for x in (17,27,37,47): d.rectangle([x,26,x+4,30],fill=(255,255,255))
+    for x in (22,32,42):    d.rectangle([x,34,x+4,38],fill=(255,255,255))
+    return img
+def start_tray(on_open,on_quit,on_collect,on_acomp):
+    global _TRAY
+    if not HAVE_TRAY: debug("트레이 없음(미탑재)"); return None
+    try:
+        menu=pystray.Menu(
+            pystray.MenuItem("열기", lambda i,it: on_open(), default=True),
+            pystray.MenuItem("수집 켜기/끄기", lambda i,it: on_collect()),
+            pystray.MenuItem("자동완성 켜기/끄기", lambda i,it: on_acomp()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("종료", lambda i,it: on_quit()),
+        )
+        _TRAY=pystray.Icon("TypingHelper", _tray_image(), APP_NAME, menu)
+        threading.Thread(target=_TRAY.run, daemon=True).start()
+        debug("트레이 시작"); return _TRAY
+    except Exception:
+        debug("트레이 실패:\n"+traceback.format_exc()); return None
 
 # ---- 대시보드 ----
 _MUTEX=None
@@ -452,10 +512,24 @@ def run_ui():
 
     # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
     bottom=tk.Frame(root,bg="#f5f6f8"); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
-    tk.Button(bottom,text="백그라운드로 숨기기",font=F,command=root.iconify,relief="flat",bg="#e5e7eb",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(0,4))
-    def quit_all(): debug("사용자 종료"); root.destroy(); os._exit(0)
+    def show_window():
+        try: root.deiconify(); root.after(10, lambda:(root.lift(), root.focus_force()))
+        except Exception: pass
+    def hide_bg():
+        # 트레이가 있으면 창을 완전히 숨겨(작업표시줄에서도 사라짐) 트레이로만 남긴다.
+        if HAVE_TRAY and _TRAY is not None: root.withdraw()
+        else: root.iconify()
+    def quit_all():
+        debug("사용자 종료")
+        try:
+            if _TRAY is not None: _TRAY.stop()
+        except Exception: pass
+        try: root.destroy()
+        except Exception: pass
+        os._exit(0)
+    tk.Button(bottom,text=("트레이로 숨기기" if HAVE_TRAY else "백그라운드로 숨기기"),font=F,command=hide_bg,relief="flat",bg="#e5e7eb",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(0,4))
     tk.Button(bottom,text="종료",font=F,command=quit_all,relief="flat",bg="#fecaca",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(4,0))
-    root.protocol("WM_DELETE_WINDOW", root.iconify)
+    root.protocol("WM_DELETE_WINDOW", quit_all)   # X = 실제 종료
 
     tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg="#f5f6f8",fg="#1f2937").pack(pady=(14,4))
     status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg="#f5f6f8"); stat.pack()
@@ -571,6 +645,8 @@ def run_ui():
     q_entry.bind("<Control-Return>", lambda e: do_add())
 
     refill(); q_entry.focus_set()
+    start_tray(on_open=lambda: post_ui(show_window), on_quit=lambda: post_ui(quit_all),
+               on_collect=toggle_collect, on_acomp=toggle_acomp)
     refresh(); overlay_tick(); debug("mainloop 진입"); root.mainloop()
 
 if __name__=="__main__":
