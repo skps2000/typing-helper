@@ -1,0 +1,16 @@
+=== GitHub에 올리기 (이 폴더에서 실행) ===
+저장소: https://github.com/skps2000/typing-helper
+
+명령 프롬프트를 이 폴더에서 열고:
+
+  git init
+  git add -A
+  git commit -m "타이핑 도우미: 소스+README 반영"
+  git branch -M main
+  git remote add origin https://github.com/skps2000/typing-helper.git
+  git push -u origin main
+
+(GitHub에서 저장소 만들 때 README를 넣었다면 push가 거부될 수 있음)
+그 경우: git push -u origin main --force
+
+개인 수집 데이터(내 문서\TypingLog)는 .gitignore로 자동 제외됩니다.
