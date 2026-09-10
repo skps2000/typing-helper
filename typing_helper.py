@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v8(오버레이 지속+트레이) boot ===")
+debug("=== v9(단어경계+노포커스) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -167,16 +167,31 @@ def del_phrase(text):
         debug("표현 삭제 실패:\n"+traceback.format_exc()); return "삭제 실패 (로그 확인)"
     reload_phrases(); return "삭제됨: "+t
 MAX_SUG=6
+def _match_from_boundary(prefix, n):
+    # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
+    # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
+    # "켜고 너한테 말하는 거야..." -> 후보 "너한테 말하는 거야..."
+    L=len(prefix); pl=prefix.lower(); seen=set(); ranked=[]
+    for p in PHRASE_LIST:
+        positions=[0]+[i+1 for i,c in enumerate(p) if c==" "]
+        for pos in positions:
+            tail=p[pos:]
+            if len(tail)>L and (tail.startswith(prefix) or tail.lower().startswith(pl)):
+                if tail not in seen:
+                    seen.add(tail)
+                    ranked.append((0 if pos==0 else 1, len(tail), tail))  # 문구 시작 우선, 짧은 것 우선
+                break   # 한 표현에서 가장 이른 경계만 사용
+    ranked.sort(key=lambda x:(x[0],x[1]))
+    return [t for _,_,t in ranked][:n]
 def top_matches(cur_latin, n=MAX_SUG):
-    # 커서 위 목록용 - 상위 n개 후보와 '이미 화면에 입력돼 있는 접두사'를 함께 돌려준다.
-    # 한글 조합 접두사를 먼저 맞춰보고, 걸리는 게 없으면 영문 자판 그대로 맞춘다.
+    # 커서 위 목록용 - 상위 n개 후보(각 후보는 이미 입력된 접두사로 시작)와 접두사를 돌려준다.
+    # 한글 조합 접두사를 먼저, 없으면 영문 자판 그대로 맞춘다. 단어 경계(중간 단어)도 매칭.
     if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return [], ""
     ph=compose(cur_latin)
-    hits=[p for p in PHRASE_LIST if len(p)>len(ph) and p.startswith(ph)]
-    if hits: return hits[:n], ph
-    pl=cur_latin.lower()
-    hits=[p for p in PHRASE_LIST if len(p)>len(pl) and p.lower().startswith(pl)]
-    if hits: return hits[:n], cur_latin
+    hits=_match_from_boundary(ph, n)
+    if hits: return hits, ph
+    hits=_match_from_boundary(cur_latin, n)
+    if hits: return hits, cur_latin
     return [], ""
 def reco_matches(q, k=40):
     """대시보드 추천창용 - 사용자가 상자에 입력한 질의(q)로 표현 목록을 걸러 정렬한다.
@@ -397,6 +412,18 @@ def build_overlay(root):
     OVHINT=tk.Label(OV,text="↑↓ 선택 · Tab 완성 · Esc 닫기",
                     font=("Malgun Gothic",8),bg="#1f2937",fg="#9ca3af",anchor="w",padx=6)
     OVHINT.pack(fill="x",padx=1,pady=(0,1))
+    OV.update_idletasks()
+    # 팝업이 포커스를 가져가면 입력 필드의 한/영 상태가 초기화된다(영어로 바뀜).
+    # NOACTIVATE 로 절대 활성화되지 않는 순수 표시용 창으로 만든다.
+    try:
+        GWL_EXSTYLE=-20; WS_EX_NOACTIVATE=0x08000000; WS_EX_TOOLWINDOW=0x00000080
+        u32.GetParent.restype=wintypes.HWND; u32.GetParent.argtypes=[wintypes.HWND]
+        u32.GetWindowLongW.restype=wintypes.LONG; u32.GetWindowLongW.argtypes=[wintypes.HWND,ctypes.c_int]
+        u32.SetWindowLongW.restype=wintypes.LONG; u32.SetWindowLongW.argtypes=[wintypes.HWND,ctypes.c_int,wintypes.LONG]
+        hwnd=OV.winfo_id(); gp=u32.GetParent(hwnd) or hwnd
+        cur=u32.GetWindowLongW(gp,GWL_EXSTYLE)
+        u32.SetWindowLongW(gp,GWL_EXSTYLE,cur|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW)
+    except Exception: debug("noactivate 실패:\n"+traceback.format_exc())
     OV.withdraw()
 def draw_overlay():
     # 내용/위치만 갱신한다. 숨길지 여부는 overlay_tick 이 판단(깜빡임 방지).
