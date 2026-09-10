@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v6(추천패널) boot ===")
+debug("=== v7(커서 위 목록) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -121,14 +121,57 @@ def load_phrases():
                 if s.strip() and not s.lstrip().startswith("#"): out.append(s)
         PHRASE_LIST=out; debug(f"phrases {len(out)}개 로드")
     except Exception: pass
-def best_suggestion(cur_latin):
-    if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return None
-    ph=compose(cur_latin); pl=cur_latin.lower()
-    for p in PHRASE_LIST:
-        if len(p)>len(ph) and p.startswith(ph): return (p,ph)
-    for p in PHRASE_LIST:
-        if len(p)>len(pl) and p.lower().startswith(pl): return (p,cur_latin)
-    return None
+def reload_phrases():
+    global _phrase_mtime
+    _phrase_mtime=0; load_phrases()      # mtime 무시하고 강제로 다시 읽는다
+def _has_long_digits(t,n=8):
+    run=0
+    for c in t:
+        run=run+1 if c.isdigit() else 0
+        if run>=n: return True
+    return False
+def add_phrase(text):
+    # 사용자가 손으로 넣는 표현. 수집/교정 경로와 무관하게 저장 즉시 자동완성에 쓰인다.
+    t=" ".join(text.split())             # 앞뒤/중복 공백 정리
+    if not t: return "빈 표현입니다"
+    if t.startswith("#"): return "'#'로 시작하는 줄은 주석이라 쓸 수 없습니다"
+    if t in PHRASE_LIST: return "이미 목록에 있습니다"
+    try:
+        need_nl=False                    # 마지막 줄에 개행이 없으면 붙여준다
+        if os.path.exists(PHRASES) and os.path.getsize(PHRASES)>0:
+            with open(PHRASES,"rb") as f:
+                f.seek(-1,os.SEEK_END); need_nl = f.read(1) not in (b"\n",b"\r")
+        with open(PHRASES,"a",encoding="utf-8") as f:
+            if need_nl: f.write("\n")
+            f.write(t+"\n")
+    except Exception:
+        debug("표현 추가 실패:\n"+traceback.format_exc()); return "저장 실패 (로그 확인)"
+    reload_phrases()
+    if _has_long_digits(t): return "추가됨 - 긴 숫자가 있습니다. 민감정보가 아닌지 확인하세요"
+    return "추가됨: "+t
+def del_phrase(text):
+    t=(text or "").strip()
+    if not t: return "삭제할 표현을 목록에서 고르세요"
+    try:
+        with open(PHRASES,encoding="utf-8") as f: lines=f.readlines()
+        keep=[ln for ln in lines if ln.rstrip("\r\n")!=t]
+        if len(keep)==len(lines): return "목록에 없는 표현입니다"
+        with open(PHRASES,"w",encoding="utf-8") as f: f.writelines(keep)
+    except Exception:
+        debug("표현 삭제 실패:\n"+traceback.format_exc()); return "삭제 실패 (로그 확인)"
+    reload_phrases(); return "삭제됨: "+t
+MAX_SUG=6
+def top_matches(cur_latin, n=MAX_SUG):
+    # 커서 위 목록용 - 상위 n개 후보와 '이미 화면에 입력돼 있는 접두사'를 함께 돌려준다.
+    # 한글 조합 접두사를 먼저 맞춰보고, 걸리는 게 없으면 영문 자판 그대로 맞춘다.
+    if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return [], ""
+    ph=compose(cur_latin)
+    hits=[p for p in PHRASE_LIST if len(p)>len(ph) and p.startswith(ph)]
+    if hits: return hits[:n], ph
+    pl=cur_latin.lower()
+    hits=[p for p in PHRASE_LIST if len(p)>len(pl) and p.lower().startswith(pl)]
+    if hits: return hits[:n], cur_latin
+    return [], ""
 def reco_matches(q, k=40):
     """대시보드 추천창용 - 사용자가 상자에 입력한 질의(q)로 표현 목록을 걸러 정렬한다.
     한글 IME로 직접 친 질의와 영문 자판(dkssud)으로 친 질의를 모두 처리한다.
@@ -147,9 +190,12 @@ def reco_matches(q, k=40):
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
 _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
-S={"rem":"","full":""}
+# 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
+# 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
+S={"items":[],"idx":0,"pref":"","rem":"","ver":0}
 KBD=Controller(); LISTENER=None; ROOT=None
 VK_C,VK_V,VK_X,VK_TAB,VK_ESC=67,86,88,9,27
+VK_UP,VK_DOWN=38,40
 # 캐럿을 움직이지 않는 키들 - 자동완성 버퍼(_cur)를 지우면 안 된다.
 # Shift가 빠지면 '있습니다', '예쁘다' 처럼 쌍자음/ㅒㅖ가 든 단어에서 접두사가 통째로 날아간다.
 _KEEP_CUR=frozenset({
@@ -198,18 +244,20 @@ def on_release(key):
     global _ctrl
     if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=False
 
+def _set_sug(items,pref,idx=0):
+    # ver를 '맨 마지막'에 올려야 그리는 쪽이 반쯤 갱신된 상태를 보지 않는다.
+    S["items"]=items; S["pref"]=pref; S["idx"]=idx
+    S["rem"]=items[idx][len(pref):] if items else ""
+    S["ver"]+=1
 def _update_sug():
-    if not ACOMP:
-        S["rem"]=""
-        if ROOT: ROOT.after(0,hide_overlay)
-        return
-    r=best_suggestion("".join(_cur))
-    if r:
-        full,pref=r; S["rem"]=full[len(pref):]; S["full"]=full
-        if ROOT: ROOT.after(0,show_overlay)
-    else:
-        S["rem"]=""
-        if ROOT: ROOT.after(0,hide_overlay)
+    if not ACOMP: _set_sug([],""); return
+    items,pref=top_matches("".join(_cur))
+    _set_sug(items,pref)          # 글자를 더 치면 선택은 항상 첫 항목으로
+def move_sel(d):
+    # 화살표로 후보 이동. 저수준 훅 콜백에서 불리므로 Tk를 건드리지 않는다.
+    n=len(S["items"])
+    if not n: return
+    _set_sug(S["items"],S["pref"],(S["idx"]+d)%n)
 
 def do_insert():
     global _injecting
@@ -219,8 +267,7 @@ def do_insert():
     try: KBD.type(rem)
     except Exception: debug("insert fail:\n"+traceback.format_exc())
     time.sleep(0.03); _injecting=False
-    S["rem"]=""; _cur.clear()
-    if ROOT: ROOT.after(0,hide_overlay)
+    _cur.clear(); _set_sug([],"")
 
 def win_filter(msg, data):
     # suppress_event()는 값을 반환하지 않고 SuppressException(Exception 상속)을 '발생'시켜
@@ -228,14 +275,18 @@ def win_filter(msg, data):
     #  (1) 삽입 스레드를 먼저 띄운다 - 예외가 나면 그 뒤 줄은 실행되지 않는다.
     #  (2) 그 호출을 try/except Exception 으로 감싸지 않는다 - 감싸면 억제가 사라져
     #      Tab이 앱으로 그대로 새고, 삽입도 일어나지 않는다(기존 버그).
+    # 저수준 훅 콜백이라 여기서는 Tk를 절대 호출하지 않는다(훅 타임아웃 방지).
     try:
-        hit = (msg in (256,260) and getattr(data,"vkCode",0)==VK_TAB
-               and S["rem"] and ACOMP and LISTENER is not None)
+        if msg not in (256,260) or not ACOMP or LISTENER is None or not S["items"]: return
+        vk=getattr(data,"vkCode",0)
     except Exception:
         debug("filter err:\n"+traceback.format_exc()); return
-    if hit:
-        threading.Thread(target=do_insert,daemon=True).start()
-        LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
+    if vk==VK_TAB: threading.Thread(target=do_insert,daemon=True).start()
+    elif vk==VK_UP: move_sel(-1)
+    elif vk==VK_DOWN: move_sel(1)
+    elif vk==VK_ESC: _set_sug([],"")
+    else: return
+    LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
 
 # ---- 캐럿 위치 ----
 class RECT(ctypes.Structure):
@@ -320,36 +371,68 @@ def _open(p):
     except Exception: debug("open fail "+p+"\n"+traceback.format_exc())
 
 # ---- 오버레이 ----
-OV=None; OVLBL=None
+OV=None; OVLIST=None; OVHINT=None; _drawn_ver=-1
 def build_overlay(root):
-    global OV,OVLBL
+    global OV,OVLIST,OVHINT
     OV=tk.Toplevel(root); OV.overrideredirect(True); OV.attributes("-topmost",True)
-    try: OV.attributes("-alpha",0.92)
+    try: OV.attributes("-alpha",0.95)
     except Exception: pass
-    OVLBL=tk.Label(OV,text="",font=("Malgun Gothic",11),bg="#111827",fg="#9ca3af",padx=8,pady=3)
-    OVLBL.pack(); OV.withdraw()
-def show_overlay():
-    if not OV or not S["rem"]:
-        if OV: OV.withdraw()
-        return
-    xy=caret_xy()
+    OV.configure(bg="#374151")
+    OVLIST=tk.Listbox(OV,font=("Malgun Gothic",11),activestyle="none",bd=0,
+                      highlightthickness=0,exportselection=False,
+                      bg="#111827",fg="#e5e7eb",selectbackground="#2563eb",selectforeground="white")
+    OVLIST.pack(fill="both",padx=1,pady=(1,0))
+    OVHINT=tk.Label(OV,text="↑↓ 선택 · Tab 완성 · Esc 닫기",
+                    font=("Malgun Gothic",8),bg="#1f2937",fg="#9ca3af",anchor="w",padx=6)
+    OVHINT.pack(fill="x",padx=1,pady=(0,1))
+    OV.withdraw()
+def draw_overlay():
+    if not OV: return
+    items=S["items"]
+    if not items or not ACOMP: OV.withdraw(); return
+    xy=caret_xy()                      # 포커스 창의 캐럿 위치(없으면 마우스 근처로 폴백)
     if not xy: OV.withdraw(); return
-    OVLBL.config(text=S["rem"]+"  ⭾Tab")
-    OV.geometry(f"+{xy[0]}+{xy[1]}"); OV.deiconify(); OV.lift()
+    idx=S["idx"]
+    if idx>=len(items): idx=len(items)-1
+    OVLIST.delete(0,tk.END)
+    for p in items: OVLIST.insert(tk.END,"  "+p)
+    OVLIST.config(height=len(items), width=min(60,max(len(p) for p in items)+4))
+    OVLIST.selection_clear(0,tk.END); OVLIST.selection_set(idx); OVLIST.see(idx)
+    OV.update_idletasks()
+    x,y=xy; w=OV.winfo_reqwidth(); h=OV.winfo_reqheight()
+    sw=OV.winfo_screenwidth(); sh=OV.winfo_screenheight()
+    if x+w>sw: x=max(0,sw-w-4)
+    if y+h>sh: y=max(0,y-h-26)         # 아래 공간이 없으면 캐럿 위쪽으로 띄운다
+    OV.geometry(f"+{x}+{y}"); OV.deiconify(); OV.lift()
+def overlay_tick():
+    # 오버레이는 Tk 메인루프에서만 그린다. 다른 스레드는 S와 ver만 건드린다.
+    global _drawn_ver
+    try:
+        if S["ver"]!=_drawn_ver:
+            _drawn_ver=S["ver"]; draw_overlay()
+    except Exception: debug("overlay 예외:\n"+traceback.format_exc())
+    if ROOT: ROOT.after(60,overlay_tick)
 def hide_overlay():
     if OV: OV.withdraw()
 
 # ---- 대시보드 ----
+_MUTEX=None
 def single_instance():
+    # windll.kernel32.GetLastError() 는 ctypes 자체 호출에 덮여 신뢰할 수 없다.
+    # 그래서 중복 실행이 안 잡히고 인스턴스가 여러 개 떴다.
+    # use_last_error=True + ctypes.get_last_error() 로 읽어야 실제 에러코드가 나온다.
+    global _MUTEX
     try:
-        k=ctypes.windll.kernel32
-        k.CreateMutexW(None, False, "TypingHelper_SingleInstance_Mutex")
-        if k.GetLastError()==183:  # ALREADY_EXISTS
+        k=ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateMutexW.restype=wintypes.HANDLE
+        k.CreateMutexW.argtypes=[wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        _MUTEX=k.CreateMutexW(None, False, "TypingHelper_SingleInstance_Mutex")  # 핸들은 프로세스 수명 동안 유지
+        if ctypes.get_last_error()==183:  # ERROR_ALREADY_EXISTS
             debug("이미 실행 중 - 종료")
-            try: ctypes.windll.user32.MessageBoxW(0,"타이핑 도우미가 이미 실행 중입니다.\n(트레이/작업표시줄 확인)","타이핑 도우미",0x40)
+            try: ctypes.windll.user32.MessageBoxW(0,"타이핑 도우미가 이미 실행 중입니다.\n(작업표시줄 확인)","타이핑 도우미",0x40)
             except Exception: pass
             os._exit(0)
-    except Exception: debug("mutex 체크 실패(무시)")
+    except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
     global LISTENER,ROOT,_today_count
@@ -360,7 +443,7 @@ def run_ui():
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
     LISTENER.start(); debug("리스너 시작")
 
-    root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x820"); root.minsize(400,640)
+    root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x880"); root.minsize(400,700)
     root.resizable(False,True); root.configure(bg="#f5f6f8")
     build_overlay(root)
     F=("Malgun Gothic",10); FB=("Malgun Gothic",11,"bold"); FT=("Malgun Gothic",14,"bold")
@@ -392,7 +475,7 @@ def run_ui():
         global COLLECTING; COLLECTING=not COLLECTING
     def toggle_acomp():
         global ACOMP; ACOMP=not ACOMP
-        if not ACOMP: S["rem"]=""; hide_overlay()
+        if not ACOMP: _set_sug([],"")
     def mkbtn(txt,cmd,bg="#2563eb",fg="white"):
         tk.Button(root,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
                   activebackground=bg,cursor="hand2",height=1).pack(fill="x",padx=24,pady=3)
@@ -403,7 +486,7 @@ def run_ui():
     mkbtn("📝  교정결과(phrases.txt) 열기", lambda:_open(PHRASES))
 
     # ---- 추천 목록 패널 ----
-    panel=tk.LabelFrame(root,text=" 추천 목록 (검색어 입력 → 표현 선택) ",font=F,
+    panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
                         bg="#f5f6f8",fg="#374151",padx=8,pady=6)
     panel.pack(fill="both",expand=True,padx=16,pady=(8,4))
 
@@ -472,8 +555,23 @@ def run_ui():
                      bg="#9ca3af",fg="white",cursor="hand2",height=1)
     ac_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
 
-    refill()
-    refresh(); debug("mainloop 진입"); root.mainloop()
+    # 사용자가 직접 표현을 넣고 빼는 줄. 넣는 즉시 phrases.txt에 저장되고 자동완성에 반영된다.
+    msg_var=tk.StringVar(value="위 상자에 문구를 쓰고 '표현 추가' → 바로 자동완성에 반영됩니다")
+    def do_add():
+        msg_var.set(add_phrase(q_var.get())); q_var.set(""); refill()
+    def do_del():
+        msg_var.set(del_phrase(current_text())); refill()
+    arow=tk.Frame(panel,bg="#f5f6f8"); arow.pack(fill="x",pady=(4,0))
+    tk.Button(arow,text="＋ 표현 추가",font=FB,command=do_add,relief="flat",bg="#059669",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,3))
+    tk.Button(arow,text="선택 삭제",font=FB,command=do_del,relief="flat",bg="#b91c1c",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(3,0))
+    tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg="#f5f6f8",fg="#6b7280",
+             anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
+    q_entry.bind("<Control-Return>", lambda e: do_add())
+
+    refill(); q_entry.focus_set()
+    refresh(); overlay_tick(); debug("mainloop 진입"); root.mainloop()
 
 if __name__=="__main__":
     try:
