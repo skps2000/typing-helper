@@ -32,7 +32,7 @@ Windows에서 **내가 타이핑·복붙한 내용을 수집** → **AI로 교�
 
 ## 사용법
 
-1. `dist/TypingHelper.exe` 실행 (창 뜸)
+1. [Releases](https://github.com/skps2000/typing-helper/releases)에서 `TypingHelper.exe` 내려받아 실행 (창 뜸)
 2. 며칠 평소처럼 사용 → 데이터 수집
 3. 대시보드 **교정 프롬프트 가이드 열기** → 프롬프트 복사 → 타 AI에 `typing_*.txt`와 함께 전송
 4. AI 결과(표현 한 줄씩)를 **교정결과(phrases.txt) 열기**로 붙여넣고 저장
@@ -44,7 +44,7 @@ Windows에서 **내가 타이핑·복붙한 내용을 수집** → **AI로 교�
 pip install -r requirements.txt
 pyinstaller --onefile --noconsole --collect-all tkinter --hidden-import pynput.keyboard._win32 --name TypingHelper typing_helper.py
 ```
-> 참고: 이 저장소의 exe는 Linux + Wine 환경에서 교차 빌드되었습니다(embeddable Python + python.org tcltk.msi에서 tkinter 추가).
+> 참고: 빌드된 exe는 저장소에 커밋하지 않고 [Releases](https://github.com/skps2000/typing-helper/releases)로 배포합니다. 저장소에는 소스만 둡니다.
 
 ## 한계 / TODO
 

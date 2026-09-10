@@ -11,3 +11,6 @@ build/
 *.spec
 __pycache__/
 *.pyc
+
+# exe는 GitHub Releases로 배포 (저장소에는 커밋하지 않음)
+dist/*.exe

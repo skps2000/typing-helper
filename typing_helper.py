@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-import os, sys, time, threading, traceback, ctypes
+import os, time, threading, traceback, ctypes
 from ctypes import wintypes
-os.environ.setdefault("TCL_LIBRARY", r"C:\py311\tcl\tcl8.6")
-os.environ.setdefault("TK_LIBRARY",  r"C:\py311\tcl\tk8.6")
+# 교차 빌드(Wine) 환경의 tcl/tk 경로. 그 경로가 실제로 존재할 때만 설정한다.
+# 무조건 setdefault 하면 C:\py311 이 없는 PC에서 소스 실행 시 tk.Tk() 가 죽는다.
+for _var, _p in (("TCL_LIBRARY", r"C:\py311\tcl\tcl8.6"), ("TK_LIBRARY", r"C:\py311\tcl\tk8.6")):
+    if _var not in os.environ and os.path.isdir(_p): os.environ[_var] = _p
 from datetime import datetime, date
 
 LOG_DIR = os.path.join(os.path.expanduser("~"), "Documents", "TypingLog")
@@ -12,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v5(자동완성) boot ===")
+debug("=== v6(추천패널) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -127,44 +129,70 @@ def best_suggestion(cur_latin):
     for p in PHRASE_LIST:
         if len(p)>len(pl) and p.lower().startswith(pl): return (p,cur_latin)
     return None
+def reco_matches(q, k=40):
+    """대시보드 추천창용 - 사용자가 상자에 입력한 질의(q)로 표현 목록을 걸러 정렬한다.
+    한글 IME로 직접 친 질의와 영문 자판(dkssud)으로 친 질의를 모두 처리한다.
+    앞부분 일치를 먼저, 그 다음 부분 문자열 포함 순으로 돌려준다."""
+    if not q: return PHRASE_LIST[:k]
+    ql=q.lower()
+    qh=compose(q) if q.isascii() else q   # 영문 자판이면 한글로 조합해 본다
+    pre=[]; sub=[]
+    for p in PHRASE_LIST:
+        pl=p.lower()
+        if p.startswith(q) or (qh and p.startswith(qh)) or pl.startswith(ql): pre.append(p)
+        elif q in p or (qh and qh in p) or ql in pl: sub.append(p)
+    return (pre+sub)[:k]
 
 # ---- 상태 ----
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
 _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
-_cur=[]; _injecting=False; _last_written=""
+_cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
 S={"rem":"","full":""}
 KBD=Controller(); LISTENER=None; ROOT=None
 VK_C,VK_V,VK_X,VK_TAB,VK_ESC=67,86,88,9,27
+# 캐럿을 움직이지 않는 키들 - 자동완성 버퍼(_cur)를 지우면 안 된다.
+# Shift가 빠지면 '있습니다', '예쁘다' 처럼 쌍자음/ㅒㅖ가 든 단어에서 접두사가 통째로 날아간다.
+_KEEP_CUR=frozenset({
+    keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r,
+    keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr,
+    keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r,
+    keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r,
+    keyboard.Key.caps_lock, keyboard.Key.tab,
+})
 
 def on_press(key):
     global _ctrl,_last_input,_paste,_injecting
-    if _injecting: return
-    if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=True; return
-    vk=getattr(key,"vk",None)
-    if _ctrl and vk in (VK_C,VK_V,VK_X):
-        if vk==VK_V: _paste=True
-        _cur.clear(); _update_sug()
-        return
-    ch=getattr(key,"char",None)
-    # 수집 버퍼
-    if COLLECTING:
-        _last_input=time.time()
-        with _lock:
-            if ch is not None: _buf.append(ch)
-            elif key==keyboard.Key.space: _buf.append(" ")
-            elif key==keyboard.Key.enter: _buf.append("\n")
-            elif key==keyboard.Key.backspace:
-                if _buf: _buf.pop()
-            elif key==keyboard.Key.tab: _buf.append("\t")
-    # 자동완성용 현재줄 버퍼
-    if ch is not None: _cur.append(ch)
-    elif key==keyboard.Key.space: _cur.append(" ")
-    elif key==keyboard.Key.backspace:
-        if _cur: _cur.pop()
-    elif key in (keyboard.Key.enter,keyboard.Key.esc): _cur.clear()
-    else:
-        if vk not in (VK_TAB,): _cur.clear()
-    _update_sug()
+    # 여기서 예외가 새어나가면 pynput이 리스너를 조용히 중단시킨다.
+    # join()을 하는 곳이 없어서 수집이 멎어도 아무도 모른다 - 전체를 감싼다.
+    try:
+        if _injecting: return
+        if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=True; return
+        vk=getattr(key,"vk",None)
+        if _ctrl and vk in (VK_C,VK_V,VK_X):
+            if vk==VK_V: _paste=True
+            _cur.clear(); _update_sug()
+            return
+        ch=getattr(key,"char",None)
+        # 수집 버퍼
+        if COLLECTING:
+            _last_input=time.time()
+            with _lock:
+                if ch is not None: _buf.append(ch)
+                elif key==keyboard.Key.space: _buf.append(" ")
+                elif key==keyboard.Key.enter: _buf.append("\n")
+                elif key==keyboard.Key.backspace:
+                    if _buf: _buf.pop()
+                elif key==keyboard.Key.tab: _buf.append("\t")
+        # 자동완성용 현재줄 버퍼
+        if ch is not None: _cur.append(ch)
+        elif key==keyboard.Key.space: _cur.append(" ")
+        elif key==keyboard.Key.backspace:
+            if _cur: _cur.pop()
+        elif key in (keyboard.Key.enter,keyboard.Key.esc): _cur.clear()
+        elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿이 움직인 경우만
+        _update_sug()
+    except Exception:
+        debug("on_press 예외:\n"+traceback.format_exc())
 
 def on_release(key):
     global _ctrl
@@ -172,7 +200,7 @@ def on_release(key):
 
 def _update_sug():
     if not ACOMP:
-        S["rem"]=""; 
+        S["rem"]=""
         if ROOT: ROOT.after(0,hide_overlay)
         return
     r=best_suggestion("".join(_cur))
@@ -195,11 +223,19 @@ def do_insert():
     if ROOT: ROOT.after(0,hide_overlay)
 
 def win_filter(msg, data):
+    # suppress_event()는 값을 반환하지 않고 SuppressException(Exception 상속)을 '발생'시켜
+    # pynput에 억제를 알린다. 따라서 두 가지를 지켜야 한다.
+    #  (1) 삽입 스레드를 먼저 띄운다 - 예외가 나면 그 뒤 줄은 실행되지 않는다.
+    #  (2) 그 호출을 try/except Exception 으로 감싸지 않는다 - 감싸면 억제가 사라져
+    #      Tab이 앱으로 그대로 새고, 삽입도 일어나지 않는다(기존 버그).
     try:
-        if msg in (256,260) and getattr(data,"vkCode",0)==VK_TAB and S["rem"] and ACOMP:
-            if LISTENER: LISTENER.suppress_event()
-            threading.Thread(target=do_insert,daemon=True).start()
-    except Exception: debug("filter err:\n"+traceback.format_exc())
+        hit = (msg in (256,260) and getattr(data,"vkCode",0)==VK_TAB
+               and S["rem"] and ACOMP and LISTENER is not None)
+    except Exception:
+        debug("filter err:\n"+traceback.format_exc()); return
+    if hit:
+        threading.Thread(target=do_insert,daemon=True).start()
+        LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
 
 # ---- 캐럿 위치 ----
 class RECT(ctypes.Structure):
@@ -209,6 +245,15 @@ class GTI(ctypes.Structure):
               ("hwndFocus",wintypes.HWND),("hwndCapture",wintypes.HWND),("hwndMenuOwner",wintypes.HWND),
               ("hwndMoveSize",wintypes.HWND),("hwndCaret",wintypes.HWND),("rcCaret",RECT)]
 u32=ctypes.windll.user32
+# restype을 안 주면 ctypes가 c_int(32비트)로 받아 64비트에서 HWND가 잘릴 수 있다.
+u32.GetForegroundWindow.restype = wintypes.HWND
+u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+try: u32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+except Exception: pass
+def clip_seq():
+    """클립보드를 열지 않고 내용이 바뀌었는지만 확인한다(프로세스 공유 자원이라 잦은 open은 위험)."""
+    try: return int(u32.GetClipboardSequenceNumber())
+    except Exception: return time.monotonic_ns()   # 실패 시 매번 다른 값 -> 항상 읽기로 폴백
 def caret_xy():
     try:
         gti=GTI(); gti.cbSize=ctypes.sizeof(GTI)
@@ -224,11 +269,12 @@ def caret_xy():
 
 # ---- 수집 writer ----
 def _emit(mf,rf,han,raw,tag=""):
-    global _last_written
+    global _last_written,_today_count
     if han==_last_written: return
     _last_written=han
     ts=f"[{datetime.now():%H:%M:%S}]"; t=f" [{tag}]" if tag else ""
     mf.write(f"{ts}{t} {han}\n"); rf.write(f"{ts}{t} {raw}\n"); mf.flush(); rf.flush()
+    _today_count+=1
 def flush(mf,rf):
     global _buf
     with _lock:
@@ -238,7 +284,7 @@ def flush(mf,rf):
         if not line.strip(): continue
         _emit(mf,rf,compose(line),line)
 def writer():
-    global _paste,_last_clip
+    global _paste,_last_clip,_today_count,_clip_seq
     try:
         cur=date.today(); mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
         while True:
@@ -246,12 +292,17 @@ def writer():
             if date.today()!=cur:
                 flush(mf,rf); mf.close(); rf.close(); cur=date.today()
                 mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
+                _today_count=0
             if COLLECTING and pyperclip:
-                try: clip=pyperclip.paste()
-                except Exception: clip=""
-                if clip and clip!=_last_clip:
-                    flush(mf,rf); one=clip.replace("\n"," ⏎ ")
-                    _emit(mf,rf,one,one,"복사됨"); _last_clip=clip
+                # 0.4초마다 클립보드를 여는 대신 시퀀스 번호로 변경 여부부터 본다.
+                seq=clip_seq()
+                if seq!=_clip_seq:
+                    _clip_seq=seq
+                    try: clip=pyperclip.paste()
+                    except Exception: clip=""
+                    if clip and clip!=_last_clip:
+                        flush(mf,rf); one=clip.replace("\n"," ⏎ ")
+                        _emit(mf,rf,one,one,"복사됨"); _last_clip=clip
             if _paste:
                 _paste=False; flush(mf,rf); one=(_last_clip or "").replace("\n"," ⏎ ")
                 _emit(mf,rf,one,one,"붙여넣기")
@@ -278,7 +329,7 @@ def build_overlay(root):
     OVLBL=tk.Label(OV,text="",font=("Malgun Gothic",11),bg="#111827",fg="#9ca3af",padx=8,pady=3)
     OVLBL.pack(); OV.withdraw()
 def show_overlay():
-    if not OV or not S["rem"]: 
+    if not OV or not S["rem"]:
         if OV: OV.withdraw()
         return
     xy=caret_xy()
@@ -301,26 +352,41 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시)")
 
 def run_ui():
-    global LISTENER,ROOT
+    global LISTENER,ROOT,_today_count
     single_instance()
     ensure_files(); load_phrases()
+    _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
     LISTENER.start(); debug("리스너 시작")
 
-    root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("380x585"); root.resizable(False,False)
-    root.configure(bg="#f5f6f8")
+    root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x820"); root.minsize(400,640)
+    root.resizable(False,True); root.configure(bg="#f5f6f8")
     build_overlay(root)
     F=("Malgun Gothic",10); FB=("Malgun Gothic",11,"bold"); FT=("Malgun Gothic",14,"bold")
-    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg="#f5f6f8",fg="#1f2937").pack(pady=(16,4))
+
+    AUTO_COPY=tk.BooleanVar(value=False)   # 자동복사: 입력 때마다 1순위 표현을 클립보드에 복사
+
+    # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
+    bottom=tk.Frame(root,bg="#f5f6f8"); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
+    tk.Button(bottom,text="백그라운드로 숨기기",font=F,command=root.iconify,relief="flat",bg="#e5e7eb",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(0,4))
+    def quit_all(): debug("사용자 종료"); root.destroy(); os._exit(0)
+    tk.Button(bottom,text="종료",font=F,command=quit_all,relief="flat",bg="#fecaca",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(4,0))
+    root.protocol("WM_DELETE_WINDOW", root.iconify)
+
+    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg="#f5f6f8",fg="#1f2937").pack(pady=(14,4))
     status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg="#f5f6f8"); stat.pack()
-    info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg="#f5f6f8",fg="#6b7280").pack(pady=(2,10))
+    info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg="#f5f6f8",fg="#6b7280").pack(pady=(2,8))
 
     def refresh():
-        s="● 수집 중" if COLLECTING else "■ 수집 멈춤"
-        a="자동완성 ON" if ACOMP else "자동완성 OFF"
-        status_var.set(f"{s}   |   {a}"); stat.config(fg="#059669" if COLLECTING else "#dc2626")
-        info_var.set(f"오늘 {count_today_lines()}줄 수집 · 표현 {len(PHRASE_LIST)}개 로드됨")
+        if LISTENER is not None and not LISTENER.is_alive():
+            status_var.set("⚠ 키보드 후킹 중단됨 - 앱을 다시 시작하세요"); stat.config(fg="#dc2626")
+        else:
+            s="● 수집 중" if COLLECTING else "■ 수집 멈춤"
+            a="자동완성 ON" if ACOMP else "자동완성 OFF"
+            status_var.set(f"{s}   |   {a}"); stat.config(fg="#059669" if COLLECTING else "#dc2626")
+        # 예전엔 여기서 오늘자 로그 전체를 1.2초마다 다시 읽었다(파일이 클수록 UI가 느려짐).
+        info_var.set(f"오늘 {_today_count}줄 수집 · 표현 {len(PHRASE_LIST)}개 로드됨")
         root.after(1200,refresh)
     def toggle_collect():
         global COLLECTING; COLLECTING=not COLLECTING
@@ -329,18 +395,84 @@ def run_ui():
         if not ACOMP: S["rem"]=""; hide_overlay()
     def mkbtn(txt,cmd,bg="#2563eb",fg="white"):
         tk.Button(root,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
-                  activebackground=bg,cursor="hand2",height=2).pack(fill="x",padx=24,pady=5)
+                  activebackground=bg,cursor="hand2",height=1).pack(fill="x",padx=24,pady=3)
     mkbtn("수집 켜기 / 끄기", toggle_collect, bg="#374151")
     mkbtn("자동완성 켜기 / 끄기", toggle_acomp, bg="#4b5563")
     mkbtn("📋  교정 프롬프트 가이드 열기", lambda:_open(GUIDE))
     mkbtn("📁  수집 데이터 폴더 열기", lambda:_open(LOG_DIR))
     mkbtn("📝  교정결과(phrases.txt) 열기", lambda:_open(PHRASES))
 
-    bottom=tk.Frame(root,bg="#f5f6f8"); bottom.pack(fill="x",pady=(14,10),padx=24)
-    tk.Button(bottom,text="백그라운드로 숨기기",font=F,command=root.iconify,relief="flat",bg="#e5e7eb",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(0,4))
-    def quit_all(): debug("사용자 종료"); root.destroy(); os._exit(0)
-    tk.Button(bottom,text="종료",font=F,command=quit_all,relief="flat",bg="#fecaca",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(4,0))
-    root.protocol("WM_DELETE_WINDOW", root.iconify)
+    # ---- 추천 목록 패널 ----
+    panel=tk.LabelFrame(root,text=" 추천 목록 (검색어 입력 → 표현 선택) ",font=F,
+                        bg="#f5f6f8",fg="#374151",padx=8,pady=6)
+    panel.pack(fill="both",expand=True,padx=16,pady=(8,4))
+
+    q_var=tk.StringVar()
+    q_entry=tk.Entry(panel,textvariable=q_var,font=("Malgun Gothic",12))
+    q_entry.pack(fill="x",pady=(2,6))
+
+    listwrap=tk.Frame(panel,bg="#f5f6f8"); listwrap.pack(fill="both",expand=True)
+    sb=tk.Scrollbar(listwrap); sb.pack(side="right",fill="y")
+    reco=tk.Listbox(listwrap,font=("Malgun Gothic",12),activestyle="none",
+                    bg="#ffffff",fg="#111827",selectbackground="#2563eb",selectforeground="white",
+                    highlightthickness=1,highlightbackground="#d1d5db",yscrollcommand=sb.set)
+    reco.pack(side="left",fill="both",expand=True); sb.config(command=reco.yview)
+
+    def current_text():
+        sel=reco.curselection()
+        if sel: return reco.get(sel[0])
+        if reco.size()>0: return reco.get(0)
+        return ""
+    def refill(*_):
+        items=reco_matches(q_var.get().strip())
+        reco.delete(0,tk.END)
+        for it in items: reco.insert(tk.END,it)
+        if reco.size()>0: reco.selection_clear(0,tk.END); reco.selection_set(0)
+        if AUTO_COPY.get() and items and pyperclip:
+            try: pyperclip.copy(items[0])
+            except Exception: pass
+    q_var.trace_add("write",refill)
+
+    def do_copy():
+        t=current_text()
+        if t and pyperclip:
+            try: pyperclip.copy(t)
+            except Exception: pass
+    def do_paste():
+        # 복사 후 대시보드를 숨겨 직전 창으로 포커스를 넘기고, Ctrl+V 를 보낸다.
+        global _injecting
+        t=current_text()
+        if not t: return
+        if pyperclip:
+            try: pyperclip.copy(t)
+            except Exception: pass
+        root.iconify()
+        def _send():
+            time.sleep(0.35); _injecting=True
+            try:
+                KBD.press(keyboard.Key.ctrl); KBD.press("v"); KBD.release("v"); KBD.release(keyboard.Key.ctrl)
+            except Exception: debug("paste fail:\n"+traceback.format_exc())
+            time.sleep(0.05); _injecting=False
+        threading.Thread(target=_send,daemon=True).start()
+    def toggle_autocopy():
+        AUTO_COPY.set(not AUTO_COPY.get())
+        ac_btn.config(text=("자동복사 ON" if AUTO_COPY.get() else "자동복사 OFF"),
+                      bg=("#059669" if AUTO_COPY.get() else "#9ca3af"))
+        if AUTO_COPY.get(): do_copy()   # 켜는 즉시 현재 1순위 복사
+
+    reco.bind("<Double-Button-1>", lambda e: do_copy())
+    q_entry.bind("<Return>", lambda e: do_paste())
+
+    brow=tk.Frame(panel,bg="#f5f6f8"); brow.pack(fill="x",pady=(6,0))
+    tk.Button(brow,text="복사",font=FB,command=do_copy,relief="flat",bg="#2563eb",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,3))
+    tk.Button(brow,text="붙여넣기",font=FB,command=do_paste,relief="flat",bg="#7c3aed",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=3)
+    ac_btn=tk.Button(brow,text="자동복사 OFF",font=FB,command=toggle_autocopy,relief="flat",
+                     bg="#9ca3af",fg="white",cursor="hand2",height=1)
+    ac_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
+
+    refill()
     refresh(); debug("mainloop 진입"); root.mainloop()
 
 if __name__=="__main__":

@@ -1,5 +1,3 @@
 pynput
 pyperclip
-pystray
-Pillow
 pyinstaller
