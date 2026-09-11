@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v10(UIA 캐럿추적) boot ===")
+debug("=== v13(UIA 실제텍스트 보정) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -183,15 +183,37 @@ def _match_from_boundary(prefix, n):
                 break   # 한 표현에서 가장 이른 경계만 사용
     ranked.sort(key=lambda x:(x[0],x[1]))
     return [t for _,_,t in ranked][:n]
+def _suffix_candidates(s):
+    # "그래서 확인 후" -> ["그래서 확인 후", "확인 후", "후"] (전체 먼저, 뒤 단어로 백오프)
+    # 앞 단어가 저장된 표현에 없어도 뒤쪽 단어부터는 매칭되게 한다.
+    s=s.strip()
+    if not s: return []
+    words=[w for w in s.split(" ") if w]
+    out=[]
+    for i in range(len(words)):
+        cand=" ".join(words[i:])
+        if i==0 or len(cand)>=2:   # 전체는 항상, 백오프 접미는 2자 이상만(노이즈 억제)
+            out.append(cand)
+    return out
+def _matches_for(text, n=MAX_SUG, min_prefix=1):
+    # 접두사(text)에 접미 백오프 + 단어경계 매칭. (후보목록, 매칭접두사) 반환.
+    if not text or not PHRASE_LIST: return [], ""
+    for prefix in _suffix_candidates(text):
+        if len(prefix)<min_prefix: continue
+        hits=_match_from_boundary(prefix, n)
+        if hits: return hits, prefix
+    return [], ""
+def _line_before_caret(text, cap=80):
+    # UIA로 읽은 '줄 시작~커서' 텍스트에서 현재 줄(마지막 줄바꿈 이후)만 잘라낸다.
+    if not text: return ""
+    seg=text.replace("\r","\n").split("\n")[-1]
+    return seg[-cap:]
 def top_matches(cur_latin, n=MAX_SUG):
-    # 커서 위 목록용 - 상위 n개 후보(각 후보는 이미 입력된 접두사로 시작)와 접두사를 돌려준다.
-    # 한글 조합 접두사를 먼저, 없으면 영문 자판 그대로 맞춘다. 단어 경계(중간 단어)도 매칭.
+    # 커서 위 목록용 - 키 입력을 한글로 조합(우선)하거나 영문 자판 그대로 매칭.
     if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return [], ""
-    ph=compose(cur_latin)
-    hits=_match_from_boundary(ph, n)
-    if hits: return hits, ph
-    hits=_match_from_boundary(cur_latin, n)
-    if hits: return hits, cur_latin
+    for base in (compose(cur_latin), cur_latin):
+        items,pref=_matches_for(base, n)
+        if items: return items, pref
     return [], ""
 def reco_matches(q, k=40):
     """대시보드 추천창용 - 사용자가 상자에 입력한 질의(q)로 표현 목록을 걸러 정렬한다.
@@ -211,6 +233,8 @@ def reco_matches(q, k=40):
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
 _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
+USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0     # UIA로 읽은 커서앞 실제 텍스트 + 최근 타이핑 시각
+OUR_PID=ctypes.windll.kernel32.GetCurrentProcessId()  # 우리 창엔 제안하지 않기 위한 식별
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
 S={"items":[],"idx":0,"pref":"","rem":"","ver":0,"close":False}
@@ -228,10 +252,11 @@ _KEEP_CUR=frozenset({
 })
 
 def on_press(key):
-    global _ctrl,_last_input,_paste,_injecting
+    global _ctrl,_last_input,_paste,_injecting,_last_key
     # 여기서 예외가 새어나가면 pynput이 리스너를 조용히 중단시킨다.
     # join()을 하는 곳이 없어서 수집이 멎어도 아무도 모른다 - 전체를 감싼다.
     try:
+        _last_key=time.time()
         if _injecting: return
         if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=True; return
         vk=getattr(key,"vk",None)
@@ -254,7 +279,10 @@ def on_press(key):
         if ch is not None: _cur.append(ch)
         elif key==keyboard.Key.space: _cur.append(" ")
         elif key==keyboard.Key.backspace:
-            if _cur: _cur.pop()
+            # 한글은 Backspace 1번에 조합 글자 1개가 지워지지만 _cur엔 영문 키가 여러 개라
+            # 하나만 pop하면 어긋난다(브리 qmfl=4타지만 화면 2글자). 지우면 버퍼를 비워
+            # 다음 입력부터 새로 매칭 -> 썼다 지웠다 반복해도 매번 정상 표시.
+            _cur.clear()
         elif key in (keyboard.Key.enter,keyboard.Key.esc): _cur.clear()
         elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿이 움직인 경우만
         _update_sug()
@@ -273,7 +301,9 @@ def _set_sug(items,pref,idx=0,close=False):
     S["ver"]+=1
 def _update_sug():
     if not ACOMP: _set_sug([],""); return
-    items,pref=top_matches("".join(_cur))
+    items,pref=top_matches("".join(_cur))              # 키 입력 조합(즉각)
+    if not items and USE_UIA_PREFIX and _uia_prefix:   # 버퍼가 비었/어긋났으면 실제 텍스트로 보정
+        items,pref=_matches_for(_uia_prefix, MAX_SUG, min_prefix=2)
     _set_sug(items,pref)          # 글자를 더 치면 선택은 항상 첫 항목으로
 def move_sel(d):
     # 화살표로 후보 이동. 저수준 훅 콜백에서 불리므로 Tk를 건드리지 않는다.
@@ -343,7 +373,7 @@ _caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으
 def caret_tracker():
     # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
     # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
-    global _caret_xy
+    global _caret_xy,_uia_prefix
     try:
         import comtypes, comtypes.client as _cc
         try: comtypes.CoInitialize()
@@ -355,27 +385,44 @@ def caret_tracker():
         debug("UIA 캐럿 추적 시작")
     except Exception:
         debug("UIA 불가(GetGUIThreadInfo/마우스 폴백):\n"+traceback.format_exc()); return
+    EP_START=_UIA.TextPatternRangeEndpoint_Start; U_LINE=_UIA.TextUnit_Line
+    fg_pid=wintypes.DWORD(); _logged=False
     while True:
         try:
-            if not S["items"]: time.sleep(0.08); continue
-            xy=None; el=uia.GetFocusedElement()
+            if not ACOMP: time.sleep(0.2); continue
+            fg=u32.GetForegroundWindow(); u32.GetWindowThreadProcessId(fg, ctypes.byref(fg_pid))
+            if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안하지 않는다
+                if _uia_prefix: _uia_prefix=""
+                time.sleep(0.12); continue
+            active=bool(S["items"]); xy=None; newp=""
+            el=uia.GetFocusedElement()
             if el is not None:
-                try:                                   # 1순위: 텍스트 선택(=캐럿) 사각형
+                try:
                     tp=el.GetCurrentPattern(TPID)
                     if tp:
                         sel=tp.QueryInterface(ITP).GetSelection()
                         if sel and sel.Length>0:
-                            v=list(sel.GetElement(0).GetBoundingRectangles())
-                            if len(v)>=4: xy=(int(v[0])+2, int(v[1]+v[3])+2)  # left, top+height
+                            r0=sel.GetElement(0)
+                            if active:                 # 위치는 목록이 떠 있을 때만 필요
+                                v=list(r0.GetBoundingRectangles())
+                                if len(v)>=4: xy=(int(v[0])+2, int(v[1]+v[3])+2)
+                            try:                       # 커서 앞 현재 줄 텍스트
+                                rng=r0.Clone(); rng.MoveEndpointByUnit(EP_START,U_LINE,-1)
+                                newp=_line_before_caret(rng.GetText(120))
+                                if newp and not _logged: debug("UIA 텍스트 보정 사용 시작"); _logged=True
+                            except Exception: pass
                 except Exception: pass
-                if xy is None:                          # 2순위: 포커스 요소 박스 왼쪽 아래
+                if xy is None and active:
                     try:
                         r=el.CurrentBoundingRectangle
                         if r.right>r.left: xy=(int(r.left)+6, int(r.bottom)+2)
                     except Exception: pass
             if xy: _caret_xy=xy
+            if newp!=_uia_prefix:                      # 실제 텍스트가 바뀌면(마우스/편집/삭제) 반영
+                _uia_prefix=newp
+                if time.time()-_last_key<1.5: _update_sug()   # 최근 타이핑 중일 때만 능동 표시
         except Exception: pass
-        time.sleep(0.035)
+        time.sleep(0.035 if S["items"] else 0.07)
 
 # ---- 수집 writer ----
 def _emit(mf,rf,han,raw,tag=""):
