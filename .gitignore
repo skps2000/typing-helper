@@ -14,3 +14,5 @@ __pycache__/
 
 # exe는 GitHub Releases로 배포 (저장소에는 커밋하지 않음)
 dist/*.exe
+usage.json
+settings.json

@@ -109,6 +109,18 @@ def test_suffix_backoff():
         if hits: got = (prefix, hits); break
     check("백오프로 브리핑 회수", got and got[0] == "브리핑", str(got))
 
+def test_usage_ranking():
+    """자주 채택한 표현이 위로 올라와야 한다(사용 학습)."""
+    setup()
+    th.USAGE = {}
+    base, _ = th.top_matches("ghkrdls")  # 확인
+    # 평소엔 위가 아니던 '확인해봐'에 사용빈도를 주면 1순위가 돼야
+    th.USAGE = {"확인해봐": 5}
+    boosted, _ = th.top_matches("ghkrdls")
+    check("사용빈도로 확인해봐 1순위", boosted and boosted[0] == "확인해봐",
+          str(boosted[:2]) + " (기본:" + str(base[:2]) + ")")
+    th.USAGE = {}  # 정리
+
 def test_line_before_caret():
     check("현재 줄만 추출", th._line_before_caret("가나\n다라 마") == "다라 마",
           th._line_before_caret("가나\n다라 마"))
@@ -131,11 +143,52 @@ def test_uia_gapfill():
     check("1글자 UIA 억제", th.S["items"] == [], str(th.S["items"]))
     th._cur = []; th._uia_prefix = ""   # 정리
 
+def test_settings_roundtrip():
+    """설정 저장/복원(임시 파일). 레지스트리는 건드리지 않는다."""
+    import tempfile
+    old = th.SETTINGS_PATH
+    th.SETTINGS_PATH = os.path.join(tempfile.gettempdir(), "th_settings_unittest.json")
+    try:
+        th.save_settings({"collecting": False, "acomp": True, "autocopy": True})
+        got = th.load_settings()
+        check("설정 round-trip", got == {"collecting": False, "acomp": True, "autocopy": True}, str(got))
+        # 손상 파일이면 빈 dict
+        with open(th.SETTINGS_PATH, "w", encoding="utf-8") as f: f.write("{not json")
+        check("손상 설정 안전 처리", th.load_settings() == {}, str(th.load_settings()))
+    finally:
+        try: os.remove(th.SETTINGS_PATH)
+        except Exception: pass
+        th.SETTINGS_PATH = old
+
+def test_phrases_normalization():
+    """로딩 시 끝 공백 제거 + 중복 줄 제거(첫 등장 유지) + 주석/빈 줄 무시."""
+    import tempfile
+    old_p, old_m = th.PHRASES, th._phrase_mtime
+    tmp = os.path.join(tempfile.gettempdir(), "th_phrases_unittest.txt")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# 주석\n브리핑해줘  \n\n브리핑해줘\n확인해봐\n브리핑해줘\n")
+    try:
+        th.PHRASES = tmp; th.reload_phrases()
+        check("중복/공백 정규화", th.PHRASE_LIST == ["브리핑해줘", "확인해봐"], str(th.PHRASE_LIST))
+    finally:
+        th.PHRASES = old_p; th._phrase_mtime = 0
+        try: os.remove(tmp)
+        except Exception: pass
+
+def test_chosung_search():
+    """초성 검색: ㅂㄹㅍ -> 브리핑 계열."""
+    setup()
+    check("_chosung", th._chosung("브리핑해줘") == "ㅂㄹㅍㅎㅈ", th._chosung("브리핑해줘"))
+    check("초성질의 판별", th._is_chosung_query("ㅂㄹㅍ") and not th._is_chosung_query("브리"))
+    res = th.reco_matches("ㅂㄹㅍ")
+    check("ㅂㄹㅍ -> 브리핑", any(p.startswith("브리핑") for p in res), str(res[:3]))
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
                test_backspace_clear_recovers, test_suffix_backoff,
-               test_line_before_caret, test_uia_gapfill]:
+               test_line_before_caret, test_uia_gapfill, test_usage_ranking, test_settings_roundtrip,
+               test_phrases_normalization, test_chosung_search]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v13(UIA 실제텍스트 보정) boot ===")
+debug("=== v16(정규화+초성검색) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -114,17 +114,70 @@ def compose(latin):
 
 # ---- phrases 로딩 ----
 PHRASE_LIST=[]; _phrase_mtime=0
+USAGE={}; USAGE_PATH=os.path.join(LOG_DIR,"usage.json")
+def load_usage():
+    global USAGE
+    try:
+        import json
+        with open(USAGE_PATH,encoding="utf-8") as f: USAGE=json.load(f) or {}
+    except Exception: USAGE={}
+def save_usage():
+    try:
+        import json
+        with open(USAGE_PATH,"w",encoding="utf-8") as f: json.dump(USAGE,f,ensure_ascii=False)
+    except Exception: pass
+def record_use(text):
+    # Tab으로 채택한 표현의 빈도를 올린다 -> 다음부터 위로 정렬된다.
+    if not text: return
+    USAGE[text]=USAGE.get(text,0)+1; save_usage()
+def _usage_of(t): return USAGE.get(t,0)
+SETTINGS_PATH=os.path.join(LOG_DIR,"settings.json")
+def load_settings():
+    try:
+        import json
+        with open(SETTINGS_PATH,encoding="utf-8") as f: return json.load(f) or {}
+    except Exception: return {}
+def save_settings(d):
+    try:
+        import json
+        with open(SETTINGS_PATH,"w",encoding="utf-8") as f: json.dump(d,f,ensure_ascii=False)
+    except Exception: debug("설정 저장 실패:\n"+traceback.format_exc())
+_RUN_KEY=r"Software\Microsoft\Windows\CurrentVersion\Run"
+def _autostart_cmd():
+    import sys
+    if getattr(sys,"frozen",False): return '"%s"'%sys.executable          # 배포 exe
+    py=sys.executable.replace("python.exe","pythonw.exe")                 # 소스 실행(pythonw)
+    return '"%s" "%s"'%(py, os.path.abspath(__file__))
+def autostart_enabled():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,_RUN_KEY) as k:
+            winreg.QueryValueEx(k,"TypingHelper"); return True
+    except Exception: return False
+def set_autostart(on):
+    # HKCU Run 키에 등록/해제. 관리자 권한 불필요.
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,_RUN_KEY,0,winreg.KEY_SET_VALUE) as k:
+            if on: winreg.SetValueEx(k,"TypingHelper",0,winreg.REG_SZ,_autostart_cmd())
+            else:
+                try: winreg.DeleteValue(k,"TypingHelper")
+                except FileNotFoundError: pass
+        return True
+    except Exception: debug("autostart 실패:\n"+traceback.format_exc()); return False
 def load_phrases():
     global PHRASE_LIST,_phrase_mtime
     try:
         mt=os.path.getmtime(PHRASES)
         if mt==_phrase_mtime: return
         _phrase_mtime=mt
-        out=[]
+        out=[]; seen=set()
         with open(PHRASES,encoding="utf-8") as f:
             for ln in f:
-                s=ln.rstrip("\n")
-                if s.strip() and not s.lstrip().startswith("#"): out.append(s)
+                s=ln.rstrip("\r\n").rstrip()          # 끝 공백/개행 제거
+                if not s.strip() or s.lstrip().startswith("#"): continue
+                if s in seen: continue                  # 중복 줄 제거(첫 등장 유지)
+                seen.add(s); out.append(s)
         PHRASE_LIST=out; debug(f"phrases {len(out)}개 로드")
     except Exception: pass
 def reload_phrases():
@@ -179,10 +232,10 @@ def _match_from_boundary(prefix, n):
             if len(tail)>L and (tail.startswith(prefix) or tail.lower().startswith(pl)):
                 if tail not in seen:
                     seen.add(tail)
-                    ranked.append((0 if pos==0 else 1, len(tail), tail))  # 문구 시작 우선, 짧은 것 우선
+                    ranked.append((_usage_of(tail), 0 if pos==0 else 1, len(tail), tail))  # 자주쓴것>시작>짧은것
                 break   # 한 표현에서 가장 이른 경계만 사용
-    ranked.sort(key=lambda x:(x[0],x[1]))
-    return [t for _,_,t in ranked][:n]
+    ranked.sort(key=lambda x:(-x[0],x[1],x[2]))
+    return [t for *_,t in ranked][:n]
 def _suffix_candidates(s):
     # "그래서 확인 후" -> ["그래서 확인 후", "확인 후", "후"] (전체 먼저, 뒤 단어로 백오프)
     # 앞 단어가 저장된 표현에 없어도 뒤쪽 단어부터는 매칭되게 한다.
@@ -222,12 +275,25 @@ def reco_matches(q, k=40):
     if not q: return PHRASE_LIST[:k]
     ql=q.lower()
     qh=compose(q) if q.isascii() else q   # 영문 자판이면 한글로 조합해 본다
-    pre=[]; sub=[]
+    cho_q=q if _is_chosung_query(q) else (qh if _is_chosung_query(qh) else "")  # 초성 검색
+    pre=[]; sub=[]; cho=[]
     for p in PHRASE_LIST:
         pl=p.lower()
         if p.startswith(q) or (qh and p.startswith(qh)) or pl.startswith(ql): pre.append(p)
         elif q in p or (qh and qh in p) or ql in pl: sub.append(p)
-    return (pre+sub)[:k]
+        elif cho_q and _chosung(p).startswith(cho_q): cho.append(p)   # ㅂㄹㅍ -> 브리핑
+    return (pre+sub+cho)[:k]
+def _chosung(s):
+    # 한글 음절의 첫 자음(초성)만 뽑아 잇는다. "브리핑해줘" -> "ㅂㄹㅍㅎㅈ"
+    out=[]
+    for ch in s:
+        o=ord(ch)
+        if 0xAC00<=o<=0xD7A3: out.append(CHO[(o-0xAC00)//588])
+        else: out.append(ch)
+    return "".join(out)
+def _is_chosung_query(q):
+    q=q.replace(" ","")
+    return len(q)>=2 and all(c in CHO for c in q)
 
 # ---- 상태 ----
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
@@ -301,7 +367,9 @@ def _set_sug(items,pref,idx=0,close=False):
     S["ver"]+=1
 def _update_sug():
     if not ACOMP: _set_sug([],""); return
-    items,pref=top_matches("".join(_cur))              # 키 입력 조합(즉각)
+    try: _cur_s="".join(_cur)      # 훅/COM 두 스레드가 부르므로 동시변경 대비 스냅샷
+    except Exception: _cur_s=""
+    items,pref=top_matches(_cur_s)                     # 키 입력 조합(즉각)
     if not items and USE_UIA_PREFIX and _uia_prefix:   # 버퍼가 비었/어긋났으면 실제 텍스트로 보정
         items,pref=_matches_for(_uia_prefix, MAX_SUG, min_prefix=2)
     _set_sug(items,pref)          # 글자를 더 치면 선택은 항상 첫 항목으로
@@ -315,10 +383,13 @@ def do_insert():
     global _injecting
     rem=S["rem"]
     if not rem: return
+    try: acc=S["items"][S["idx"]] if S["items"] else None    # 채택한 전체 후보
+    except Exception: acc=None
     _injecting=True
     try: KBD.type(rem)
     except Exception: debug("insert fail:\n"+traceback.format_exc())
     time.sleep(0.03); _injecting=False
+    if acc: record_use(acc)
     _cur.clear(); _set_sug([],"",close=True)
 
 def win_filter(msg, data):
@@ -608,9 +679,10 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
-    global LISTENER,ROOT,_today_count
+    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP
     single_instance()
-    ensure_files(); load_phrases()
+    ensure_files(); load_phrases(); load_usage()
+    _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -622,7 +694,9 @@ def run_ui():
     build_overlay(root)
     F=("Malgun Gothic",10); FB=("Malgun Gothic",11,"bold"); FT=("Malgun Gothic",14,"bold")
 
-    AUTO_COPY=tk.BooleanVar(value=False)   # 자동복사: 입력 때마다 1순위 표현을 클립보드에 복사
+    AUTO_COPY=tk.BooleanVar(value=bool(_cfg.get("autocopy",False)))   # 자동복사 상태 복원
+    def _save_cfg():
+        save_settings({"collecting":COLLECTING,"acomp":ACOMP,"autocopy":bool(AUTO_COPY.get())})
 
     # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
     bottom=tk.Frame(root,bg="#f5f6f8"); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
@@ -660,10 +734,11 @@ def run_ui():
         info_var.set(f"오늘 {_today_count}줄 수집 · 표현 {len(PHRASE_LIST)}개 로드됨")
         root.after(1200,refresh)
     def toggle_collect():
-        global COLLECTING; COLLECTING=not COLLECTING
+        global COLLECTING; COLLECTING=not COLLECTING; _save_cfg()
     def toggle_acomp():
         global ACOMP; ACOMP=not ACOMP
         if not ACOMP: _set_sug([],"")
+        _save_cfg()
     def mkbtn(txt,cmd,bg="#2563eb",fg="white"):
         tk.Button(root,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
                   activebackground=bg,cursor="hand2",height=1).pack(fill="x",padx=24,pady=3)
@@ -672,6 +747,16 @@ def run_ui():
     mkbtn("📋  교정 프롬프트 가이드 열기", lambda:_open(GUIDE))
     mkbtn("📁  수집 데이터 폴더 열기", lambda:_open(LOG_DIR))
     mkbtn("📝  교정결과(phrases.txt) 열기", lambda:_open(PHRASES))
+    # 부팅 시 자동시작 토글
+    as_btn=tk.Button(root,font=FB,relief="flat",fg="white",cursor="hand2",height=1)
+    def _refresh_as():
+        on=autostart_enabled()
+        as_btn.config(text=("🔌  부팅 시 자동시작: 켜짐" if on else "🔌  부팅 시 자동시작: 꺼짐"),
+                      bg=("#0d9488" if on else "#6b7280"), activebackground=("#0d9488" if on else "#6b7280"))
+    def toggle_autostart():
+        set_autostart(not autostart_enabled()); _refresh_as()
+    as_btn.config(command=toggle_autostart); _refresh_as()
+    as_btn.pack(fill="x",padx=24,pady=3)
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
@@ -730,6 +815,7 @@ def run_ui():
         ac_btn.config(text=("자동복사 ON" if AUTO_COPY.get() else "자동복사 OFF"),
                       bg=("#059669" if AUTO_COPY.get() else "#9ca3af"))
         if AUTO_COPY.get(): do_copy()   # 켜는 즉시 현재 1순위 복사
+        _save_cfg()
 
     reco.bind("<Double-Button-1>", lambda e: do_copy())
     q_entry.bind("<Return>", lambda e: do_paste())
