@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v22(placeholder+대시보드 정리) boot ===")
+debug("=== v23(수집 안정성+토글 상태표시) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -629,14 +629,16 @@ def writer():
     global _paste,_last_clip,_today_count,_clip_seq
     try:
         cur=date.today(); mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
-        while True:
+    except Exception:
+        debug("writer 시작 실패:\n"+traceback.format_exc()); return
+    while True:
+        try:      # 루프 본문을 감싸 일시 오류(파일 잠김/클립보드 오류 등)에도 수집이 멈추지 않게
             time.sleep(0.4); load_phrases()
             if date.today()!=cur:
                 flush(mf,rf); mf.close(); rf.close(); cur=date.today()
                 mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
                 _today_count=0
             if COLLECTING and pyperclip:
-                # 0.4초마다 클립보드를 여는 대신 시퀀스 번호로 변경 여부부터 본다.
                 seq=clip_seq()
                 if seq!=_clip_seq:
                     _clip_seq=seq
@@ -654,8 +656,8 @@ def writer():
                     _emit(mf,rf,one,one,"붙여넣기")
             with _lock: n=len(_buf)
             if n and (time.time()-_last_input>=FLUSH_IDLE or n>=FLUSH_MAX): flush(mf,rf)
-    except Exception:
-        debug("writer 크래시:\n"+traceback.format_exc())
+        except Exception:
+            debug("writer 루프 예외(계속):\n"+traceback.format_exc()); time.sleep(0.5)
 
 def count_today_lines():
     try:
@@ -862,13 +864,15 @@ def run_ui():
             _fa=_last_fg_app or "(없음)"; _st="꺼짐" if _last_fg_app in BLOCKED_APPS else "켜짐"
             app_var.set(f"직전 앱: {_fa} · 자동완성 {_st}\n끈 앱: {', '.join(sorted(BLOCKED_APPS)) or '없음'}")
         except Exception: pass
+        try: _refresh_toggles()
+        except Exception: pass
         root.after(1200,refresh)
     def toggle_collect():
-        global COLLECTING; COLLECTING=not COLLECTING; _save_cfg()
+        global COLLECTING; COLLECTING=not COLLECTING; _save_cfg(); _refresh_toggles()
     def toggle_acomp():
         global ACOMP; ACOMP=not ACOMP
         if not ACOMP: _set_sug([],"")
-        _save_cfg()
+        _save_cfg(); _refresh_toggles()
     def mkbtn(parent,txt,cmd,bg="#2563eb",fg="white",side_pad=(0,0)):
         b=tk.Button(parent,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
                     activebackground=bg,cursor="hand2",height=1)
@@ -877,8 +881,18 @@ def run_ui():
         fr=tk.Frame(root,bg=TH["bg"]); fr.pack(fill="x",padx=20,pady=pady); return fr
     # 상태 토글 한 줄
     r_tog=mkrow()
-    mkbtn(r_tog,"● 수집 켜기/끄기", toggle_collect, bg="#374151", side_pad=(0,3))
-    mkbtn(r_tog,"✓ 자동완성 켜기/끄기", toggle_acomp, bg="#4b5563", side_pad=(3,0))
+    b_collect=mkbtn(r_tog,"수집", toggle_collect, bg="#374151", side_pad=(0,3))
+    b_acomp=mkbtn(r_tog,"자동완성", toggle_acomp, bg="#4b5563", side_pad=(3,0))
+    def _refresh_toggles():
+        try:
+            b_collect.config(text=("● 수집: 켜짐" if COLLECTING else "■ 수집: 꺼짐"),
+                             bg=("#059669" if COLLECTING else "#6b7280"),
+                             activebackground=("#059669" if COLLECTING else "#6b7280"))
+            b_acomp.config(text=("✓ 자동완성: 켜짐" if ACOMP else "✕ 자동완성: 꺼짐"),
+                           bg=("#2563eb" if ACOMP else "#6b7280"),
+                           activebackground=("#2563eb" if ACOMP else "#6b7280"))
+        except Exception: pass
+    _refresh_toggles()
     # 열기 한 줄
     r_open=mkrow()
     mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), side_pad=(0,2))
