@@ -257,6 +257,25 @@ def test_proc_name():
     name = th._proc_name(os.getpid())
     check("_proc_name 자기 프로세스", name.endswith(".exe") and len(name) > 4, name)
 
+def test_sensitive_digits():
+    """민감정보 필터: 구분자 있는 카드/전화/계좌 감지, 날짜·짧은 숫자는 통과."""
+    check("카드(공백) 감지", th._has_long_digits("카드 1234 5678 9012 3456"))
+    check("전화 감지", th._has_long_digits("010-1234-5678"))
+    check("계좌 감지", th._has_long_digits("110 234 567890"))
+    check("짧은 숫자 통과", not th._has_long_digits("오후 3시 30분 회의"))
+    check("날짜(8자리) 통과", not th._has_long_digits("2024-01-01"))
+
+def test_self_focus_block():
+    """우리 대시보드 포커스면 제안 억제(오버레이 자기창 위 표시 방지)."""
+    setup(); th.ACOMP = True; th._in_password = False; th._app_blocked = False
+    th._self_focused = True
+    th._cur = list("ghkrdls"); th._uia_prefix = "브리"; th._update_sug()
+    check("자기창: 제안 억제", th.S["items"] == [], str(th.S["items"]))
+    th._self_focused = False; th._cur = []; th._uia_prefix = ""
+
+def test_version():
+    check("APP_VERSION 존재", isinstance(th.APP_VERSION, str) and th.APP_VERSION[0].isdigit(), th.APP_VERSION)
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -265,7 +284,8 @@ def main():
                test_phrases_normalization, test_chosung_search,
                test_password_block, test_trash_restore,
                test_fuzzy_search, test_theme_compute,
-               test_app_block, test_hotkey_toggle, test_proc_name]:
+               test_app_block, test_hotkey_toggle, test_proc_name,
+               test_sensitive_digits, test_self_focus_block, test_version]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

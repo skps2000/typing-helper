@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v19(앱별 on/off+핫키) boot ===")
+debug("=== v20(자기창차단+민감필터+버전) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -52,6 +52,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
+APP_VERSION="0.18.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 FLUSH_IDLE, FLUSH_MAX = 1.5, 200
@@ -215,10 +216,14 @@ def load_phrases():
 def reload_phrases():
     global _phrase_mtime
     _phrase_mtime=0; load_phrases()      # mtime 무시하고 강제로 다시 읽는다
-def _has_long_digits(t,n=8):
+def _has_long_digits(t,n=10):
+    # 카드/계좌/전화는 보통 공백·하이픈으로 끊겨 있으므로 구분자는 숫자열을 끊지 않는다.
+    # 예) "1234 5678 9012 3456"(16자리) 감지. 날짜(8자리)는 n=10으로 대부분 제외.
     run=0
     for c in t:
-        run=run+1 if c.isdigit() else 0
+        if c.isdigit(): run+=1
+        elif c in " -.": pass
+        else: run=0
         if run>=n: return True
     return False
 def add_phrase(text):
@@ -357,6 +362,7 @@ _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True; _alt=Fals
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
 USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0; _in_password=False   # UIA 커서앞 텍스트 + 최근타이핑 + 비번칸 여부
 _app_blocked=False; _last_fg_app=""; _fg_pid_cache=0; BLOCKED_APPS=set()   # 앱별 자동완성 on/off
+_self_focused=False   # 우리 대시보드에 포커스면 제안/수집 안 함
 OUR_PID=ctypes.windll.kernel32.GetCurrentProcessId()  # 우리 창엔 제안하지 않기 위한 식별
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
@@ -391,8 +397,8 @@ def on_press(key):
             _cur.clear(); _update_sug()
             return
         ch=getattr(key,"char",None)
-        # 수집 버퍼 (비밀번호 필드에서는 기록하지 않는다 - 비번 유출 방지)
-        if COLLECTING and not _in_password:
+        # 수집 버퍼 (비밀번호 필드/우리 대시보드에서는 기록하지 않는다)
+        if COLLECTING and not _in_password and not _self_focused:
             _last_input=time.time()
             with _lock:
                 if ch is not None: _buf.append(ch)
@@ -401,8 +407,8 @@ def on_press(key):
                 elif key==keyboard.Key.backspace:
                     if _buf: _buf.pop()
                 elif key==keyboard.Key.tab: _buf.append("\t")
-        # 자동완성용 현재줄 버퍼 (비밀번호 필드에서는 조합/제안 모두 건너뜀)
-        if _in_password:
+        # 자동완성용 현재줄 버퍼 (비밀번호/우리 대시보드에서는 조합/제안 건너뜀)
+        if _in_password or _self_focused:
             if _cur: _cur.clear()
         elif ch is not None: _cur.append(ch)
         elif key==keyboard.Key.space: _cur.append(" ")
@@ -435,7 +441,7 @@ def _toggle_acomp_hotkey():
     if not ACOMP: _set_sug([],"")
     _persist_acomp()
 def _update_sug():
-    if _in_password or _app_blocked or not ACOMP: _set_sug([],""); return
+    if _self_focused or _in_password or _app_blocked or not ACOMP: _set_sug([],""); return
     try: _cur_s="".join(_cur)      # 훅/COM 두 스레드가 부르므로 동시변경 대비 스냅샷
     except Exception: _cur_s=""
     items,pref=top_matches(_cur_s)                     # 키 입력 조합(즉각)
@@ -532,7 +538,7 @@ _caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으
 def caret_tracker():
     # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
     # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
-    global _caret_xy,_uia_prefix,_in_password,_app_blocked,_last_fg_app,_fg_pid_cache
+    global _caret_xy,_uia_prefix,_in_password,_app_blocked,_last_fg_app,_fg_pid_cache,_self_focused
     try:
         import comtypes, comtypes.client as _cc
         try: comtypes.CoInitialize()
@@ -550,9 +556,12 @@ def caret_tracker():
         try:
             if not ACOMP: time.sleep(0.2); continue
             fg=u32.GetForegroundWindow(); u32.GetWindowThreadProcessId(fg, ctypes.byref(fg_pid))
-            if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안하지 않는다
+            if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안/수집하지 않는다
+                _self_focused=True
                 if _uia_prefix: _uia_prefix=""
+                if S["items"]: _set_sug([],"",close=True)
                 _in_password=False; time.sleep(0.12); continue
+            _self_focused=False
             pid=fg_pid.value
             if pid!=_fg_pid_cache:
                 _fg_pid_cache=pid; _last_fg_app=_proc_name(pid)   # 포커스 앱 실행파일명 캐시
@@ -634,11 +643,15 @@ def writer():
                     try: clip=pyperclip.paste()
                     except Exception: clip=""
                     if clip and clip!=_last_clip:
-                        flush(mf,rf); one=clip.replace("\n"," ⏎ ")
-                        _emit(mf,rf,one,one,"복사됨"); _last_clip=clip
+                        _last_clip=clip
+                        if len(clip)<=2000 and not _has_long_digits(clip):   # 민감/초장문 제외
+                            flush(mf,rf); one=clip.replace("\n"," ⏎ ")
+                            _emit(mf,rf,one,one,"복사됨")
             if _paste:
-                _paste=False; flush(mf,rf); one=(_last_clip or "").replace("\n"," ⏎ ")
-                _emit(mf,rf,one,one,"붙여넣기")
+                _paste=False; cp=(_last_clip or "")
+                if cp and len(cp)<=2000 and not _has_long_digits(cp):
+                    flush(mf,rf); one=cp.replace("\n"," ⏎ ")
+                    _emit(mf,rf,one,one,"붙여넣기")
             with _lock: n=len(_buf)
             if n and (time.time()-_last_input>=FLUSH_IDLE or n>=FLUSH_MAX): flush(mf,rf)
     except Exception:
@@ -796,7 +809,7 @@ def run_ui():
     LISTENER.start(); debug("리스너 시작")
     threading.Thread(target=caret_tracker,daemon=True).start()
 
-    root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x880"); root.minsize(400,700)
+    root=tk.Tk(); ROOT=root; root.title(f"{APP_NAME} v{APP_VERSION}"); root.geometry("400x880"); root.minsize(400,700)
     root.resizable(False,True); root.configure(bg=TH["bg"])
     build_overlay(root)
     if HAVE_SVTTK:
@@ -829,7 +842,8 @@ def run_ui():
     tk.Button(bottom,text="종료",font=F,command=quit_all,relief="flat",bg="#fecaca",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(4,0))
     root.protocol("WM_DELETE_WINDOW", quit_all)   # X = 실제 종료
 
-    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg=TH["bg"],fg=TH["fg"]).pack(pady=(14,4))
+    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg=TH["bg"],fg=TH["fg"]).pack(pady=(14,2))
+    tk.Label(root,text="v"+APP_VERSION,font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack()
     status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg=TH["bg"]); stat.pack()
     info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg=TH["bg"],fg=TH["sub"]).pack(pady=(2,8))
 
