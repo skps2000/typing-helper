@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v28(오버레이 폭제한+창크기 기억) boot ===")
+debug("=== v29(클릭 삽입+폰트 폴백) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -317,6 +317,16 @@ def import_phrases():
 MAX_SUG=6
 OV_FONT=11   # 커서 위 제안 목록 글자 크기(9~20)
 OV_MAXW=40   # 제안 목록 최대 폭(글자수) - 넘으면 말줄임
+UIFONT="Malgun Gothic"   # 대시보드/오버레이 폰트(없으면 _pick_font로 대체)
+def _pick_font():
+    # 맑은 고딕이 없으면 다른 한글 폰트로 폴백(한글 깨짐 방지)
+    try:
+        import tkinter.font as _tkfont
+        fams=set(_tkfont.families())
+        for f in ("Malgun Gothic","맑은 고딕","Noto Sans KR","나눔고딕","Gulim","Dotum","Batang","Segoe UI"):
+            if f in fams: return f
+    except Exception: pass
+    return "Malgun Gothic"
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
@@ -753,12 +763,12 @@ def build_overlay(root):
     try: OV.attributes("-alpha",0.95)
     except Exception: pass
     OV.configure(bg="#374151")
-    OVLIST=tk.Listbox(OV,font=("Malgun Gothic",OV_FONT),activestyle="none",bd=0,
+    OVLIST=tk.Listbox(OV,font=(UIFONT,OV_FONT),activestyle="none",bd=0,
                       highlightthickness=0,exportselection=False,
                       bg="#111827",fg="#e5e7eb",selectbackground="#2563eb",selectforeground="white")
     OVLIST.pack(fill="both",padx=1,pady=(1,0))
     OVHINT=tk.Label(OV,text="↑↓ 선택 · Tab 완성 · Esc 닫기",
-                    font=("Malgun Gothic",8),bg="#1f2937",fg="#9ca3af",anchor="w",padx=6)
+                    font=(UIFONT,8),bg="#1f2937",fg="#9ca3af",anchor="w",padx=6)
     OVHINT.pack(fill="x",padx=1,pady=(0,1))
     OV.update_idletasks()
     # 팝업이 포커스를 가져가면 입력 필드의 한/영 상태가 초기화된다(영어로 바뀜).
@@ -772,6 +782,14 @@ def build_overlay(root):
         cur=u32.GetWindowLongW(gp,GWL_EXSTYLE)
         u32.SetWindowLongW(gp,GWL_EXSTYLE,cur|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW)
     except Exception: debug("noactivate 실패:\n"+traceback.format_exc())
+    def _on_ov_click(e):
+        try:
+            idx=OVLIST.nearest(e.y)
+            if idx is None or idx<0 or idx>=len(S["items"]): return
+            _set_sug(S["items"], S["pref"], idx)          # 클릭한 항목으로 선택
+            threading.Thread(target=do_insert, daemon=True).start()
+        except Exception: debug("ov click:\n"+traceback.format_exc())
+    OVLIST.bind("<ButtonRelease-1>", _on_ov_click)        # 마우스로 골라 바로 삽입
     OV.withdraw()
 def _place(xy):
     x,y=xy; w=OV.winfo_reqwidth(); h=OV.winfo_reqheight()
@@ -873,7 +891,7 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
-    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT
+    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT,UIFONT
     single_instance()
     ensure_files(); load_phrases(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
@@ -894,12 +912,13 @@ def run_ui():
         _ws=_cfg.get("win_size")
         if _ws: root.geometry(_ws)          # 기억한 창 크기 복원(WxH)
     except Exception: pass
+    UIFONT=_pick_font()                     # 맑은 고딕 없으면 대체 폰트로
     root.resizable(False,True); root.configure(bg=TH["bg"])
     build_overlay(root)
     if HAVE_SVTTK:
         try: sv_ttk.set_theme("dark" if TH["dark"] else "light", root)
         except Exception: debug("sv_ttk 적용 실패:\n"+traceback.format_exc())
-    F=("Malgun Gothic",10); FB=("Malgun Gothic",11,"bold"); FT=("Malgun Gothic",14,"bold")
+    F=(UIFONT,10); FB=(UIFONT,11,"bold"); FT=(UIFONT,14,"bold")
 
     AUTO_COPY=tk.BooleanVar(value=bool(_cfg.get("autocopy",False)))   # 자동복사 상태 복원
     def _save_cfg():
@@ -934,9 +953,9 @@ def run_ui():
     root.protocol("WM_DELETE_WINDOW", quit_all)   # X = 실제 종료
 
     tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg=TH["bg"],fg=TH["fg"]).pack(pady=(14,2))
-    tk.Label(root,text="v"+APP_VERSION,font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack()
+    tk.Label(root,text="v"+APP_VERSION,font=(UIFONT,8),bg=TH["bg"],fg=TH["sub"]).pack()
     tk.Label(root,text="입력 중 커서 위 목록 → Tab 채움 · ↑↓ 이동 · Esc 닫기",
-             font=("Malgun Gothic",9),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
+             font=(UIFONT,9),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
     status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg=TH["bg"]); stat.pack()
     info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg=TH["bg"],fg=TH["sub"]).pack(pady=(2,8))
 
@@ -1015,7 +1034,7 @@ def run_ui():
     appf=tk.LabelFrame(root,text=" 앱별 자동완성 ",font=F,bg=TH["bg"],fg=TH["sub"],padx=8,pady=4)
     appf.pack(fill="x",padx=16,pady=(2,2))
     app_var=tk.StringVar(value="직전 앱을 확인 중...")
-    tk.Label(appf,textvariable=app_var,font=("Malgun Gothic",9),bg=TH["bg"],fg=TH["sub"],
+    tk.Label(appf,textvariable=app_var,font=(UIFONT,9),bg=TH["bg"],fg=TH["sub"],
              anchor="w",justify="left",wraplength=340).pack(fill="x")
     def _toggle_app():
         name=_last_fg_app
@@ -1028,7 +1047,7 @@ def run_ui():
         except Exception: pass
     tk.Button(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,relief="flat",
               bg="#4b5563",fg="white",cursor="hand2").pack(fill="x",pady=(4,0))
-    tk.Label(root,text="빠른 토글: Ctrl + Alt + Space",font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
+    tk.Label(root,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
     # 제안 개수 + 내보내기/가져오기
     r_io=tk.Frame(root,bg=TH["bg"]); r_io.pack(fill="x",padx=20,pady=(0,4))
     tk.Label(r_io,text="제안 개수",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="left")
@@ -1050,7 +1069,7 @@ def run_ui():
         except Exception: return
         v=max(9,min(20,v)); OV_FONT=v
         try:
-            if OVLIST: OVLIST.config(font=("Malgun Gothic",v))
+            if OVLIST: OVLIST.config(font=(UIFONT,v))
         except Exception: pass
         try: d=load_settings(); d["ov_font"]=v; save_settings(d)
         except Exception: pass
@@ -1075,7 +1094,7 @@ def run_ui():
     panel.pack(fill="both",expand=True,padx=16,pady=(8,4))
 
     q_var=tk.StringVar()
-    q_entry=tk.Entry(panel,textvariable=q_var,font=("Malgun Gothic",12))
+    q_entry=tk.Entry(panel,textvariable=q_var,font=(UIFONT,12))
     q_entry.pack(fill="x",pady=(2,6))
     _PH="검색어 입력 · 새 문구는 Enter로 추가"           # 흐린 안내(placeholder)
     def _q():
@@ -1096,7 +1115,7 @@ def run_ui():
 
     listwrap=tk.Frame(panel,bg=TH["bg"]); listwrap.pack(fill="both",expand=True)
     sb=tk.Scrollbar(listwrap); sb.pack(side="right",fill="y")
-    reco=tk.Listbox(listwrap,font=("Malgun Gothic",12),activestyle="none",
+    reco=tk.Listbox(listwrap,font=(UIFONT,12),activestyle="none",
                     bg=TH["listbg"],fg=TH["listfg"],selectbackground="#2563eb",selectforeground="white",
                     highlightthickness=1,highlightbackground="#d1d5db",yscrollcommand=sb.set)
     reco.pack(side="left",fill="both",expand=True); sb.config(command=reco.yview)
@@ -1174,7 +1193,7 @@ def run_ui():
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=2)
     tk.Button(arow,text="↩ 복원",font=FB,command=do_restore,relief="flat",bg="#6b7280",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(2,0))
-    tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg=TH["bg"],fg="#6b7280",
+    tk.Label(panel,textvariable=msg_var,font=(UIFONT,9),bg=TH["bg"],fg="#6b7280",
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
     q_entry.bind("<Control-Return>", lambda e: do_paste())
 
