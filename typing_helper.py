@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v27(개수요약+글자크기) boot ===")
+debug("=== v28(오버레이 폭제한+창크기 기억) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -316,6 +316,7 @@ def import_phrases():
     except Exception: debug("import 실패:\n"+traceback.format_exc()); return "가져오기 실패 (로그 확인)"
 MAX_SUG=6
 OV_FONT=11   # 커서 위 제안 목록 글자 크기(9~20)
+OV_MAXW=40   # 제안 목록 최대 폭(글자수) - 넘으면 말줄임
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
@@ -789,8 +790,9 @@ def draw_overlay():
     idx=S["idx"]
     if idx>=len(items): idx=len(items)-1
     OVLIST.delete(0,tk.END)
-    for p in items: OVLIST.insert(tk.END,"  "+p)
-    OVLIST.config(height=len(items), width=min(60,max(len(p) for p in items)+4))
+    disp=[(p if len(p)<=OV_MAXW else p[:OV_MAXW-1]+"…") for p in items]   # 긴 제안은 …로
+    for d in disp: OVLIST.insert(tk.END,"  "+d)
+    OVLIST.config(height=len(items), width=min(OV_MAXW+3, max(len(x) for x in disp)+4))
     OVLIST.selection_clear(0,tk.END); OVLIST.selection_set(idx); OVLIST.see(idx)
     OV.update_idletasks(); _place(xy); _last_pos=xy
     if not _ov_shown: OV.deiconify(); OV.lift(); _ov_shown=True
@@ -888,6 +890,10 @@ def run_ui():
     threading.Thread(target=caret_tracker,daemon=True).start()
 
     root=tk.Tk(); ROOT=root; root.title(f"{APP_NAME} v{APP_VERSION}"); root.geometry("400x880"); root.minsize(400,700)
+    try:
+        _ws=_cfg.get("win_size")
+        if _ws: root.geometry(_ws)          # 기억한 창 크기 복원(WxH)
+    except Exception: pass
     root.resizable(False,True); root.configure(bg=TH["bg"])
     build_overlay(root)
     if HAVE_SVTTK:
@@ -901,15 +907,22 @@ def run_ui():
 
     # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
     bottom=tk.Frame(root,bg=TH["bg"]); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
+    def _save_geo():
+        try:
+            wh=root.geometry().split("+")[0]     # "WxH" (위치 제외 - 오프스크린 방지)
+            if "x" in wh:
+                d=load_settings(); d["win_size"]=wh; save_settings(d)
+        except Exception: pass
     def show_window():
         try: root.deiconify(); root.after(10, lambda:(root.lift(), root.focus_force()))
         except Exception: pass
     def hide_bg():
         # 트레이가 있으면 창을 완전히 숨겨(작업표시줄에서도 사라짐) 트레이로만 남긴다.
+        _save_geo()
         if HAVE_TRAY and _TRAY is not None: root.withdraw()
         else: root.iconify()
     def quit_all():
-        debug("사용자 종료")
+        debug("사용자 종료"); _save_geo()
         try:
             if _TRAY is not None: _TRAY.stop()
         except Exception: pass
