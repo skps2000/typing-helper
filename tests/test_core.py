@@ -343,6 +343,42 @@ def test_placeholder_nav():
         try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_ph.json"))
         except Exception: pass
 
+def test_maxsug_runtime():
+    """MAX_SUG를 바꾸면 top_matches 개수에 즉시 반영(기본 인자 캡처 버그 방지)."""
+    old = th.MAX_SUG; th.PINNED = set(); th.USAGE = {}
+    th.PHRASE_LIST = ["확인 A", "확인 B", "확인 C", "확인 D", "확인 E"]
+    try:
+        th.MAX_SUG = 2; few, _ = th.top_matches("ghkrdls")
+        check("MAX_SUG=2 제한", len(few) == 2, str(few))
+        th.MAX_SUG = 6; many, _ = th.top_matches("ghkrdls")
+        check("MAX_SUG=6 더 많이", len(many) == 5 and len(many) > len(few), str(many))
+    finally:
+        th.MAX_SUG = old
+
+def test_import_export():
+    """표현 가져오기(병합/중복제거) + 내보내기(파일 복사)."""
+    import tempfile
+    old_p, old_m = th.PHRASES, th._phrase_mtime
+    tmpP = os.path.join(tempfile.gettempdir(), "th_io_target.txt")
+    tmpSrc = os.path.join(tempfile.gettempdir(), "th_io_src.txt")
+    tmpOut = os.path.join(tempfile.gettempdir(), "th_io_out.txt")
+    with open(tmpP, "w", encoding="utf-8") as f: f.write("기존표현\n")
+    with open(tmpSrc, "w", encoding="utf-8") as f: f.write("새표현1\n기존표현\n새표현2\n# 주석줄\n")
+    th.PHRASES = tmpP; th._phrase_mtime = 0; th.reload_phrases()
+    try:
+        msg = th._import_from(tmpSrc)
+        check("가져오기 병합", "새표현1" in th.PHRASE_LIST and "새표현2" in th.PHRASE_LIST, msg)
+        check("중복 미추가", th.PHRASE_LIST.count("기존표현") == 1, str(th.PHRASE_LIST))
+        check("주석 제외", "# 주석줄" not in th.PHRASE_LIST)
+        th._export_to(tmpOut)
+        with open(tmpOut, encoding="utf-8") as f: out = f.read()
+        check("내보내기 내용", "새표현1" in out and "기존표현" in out, out.strip()[:40])
+    finally:
+        th.PHRASES = old_p; th._phrase_mtime = 0
+        for p in (tmpP, tmpSrc, tmpOut):
+            try: os.remove(p)
+            except Exception: pass
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -353,7 +389,8 @@ def main():
                test_fuzzy_search, test_theme_compute,
                test_app_block, test_hotkey_toggle, test_proc_name,
                test_sensitive_digits, test_self_focus_block, test_version,
-               test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav]:
+               test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
+               test_maxsug_runtime, test_import_export]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

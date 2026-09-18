@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v25(자리표시자+표현 고정) boot ===")
+debug("=== v26(제안개수+내보내기/가져오기) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -289,6 +289,31 @@ def restore_last_deleted():
         return "복원됨: "+last
     except Exception:
         debug("복원 실패:\n"+traceback.format_exc()); return "복원 실패 (로그 확인)"
+def _export_to(path):
+    import shutil
+    shutil.copy(PHRASES, path); return "내보냄: "+os.path.basename(path)
+def export_phrases():
+    from tkinter import filedialog
+    p=filedialog.asksaveasfilename(defaultextension=".txt", initialfile="phrases_export.txt",
+        filetypes=[("텍스트 파일","*.txt")], title="표현 내보내기")
+    if not p: return ""
+    try: return _export_to(p)
+    except Exception: debug("export 실패:\n"+traceback.format_exc()); return "내보내기 실패 (로그 확인)"
+def _import_from(path):
+    try: raw=open(path,encoding="utf-8").read()
+    except UnicodeDecodeError: raw=open(path,encoding="cp949",errors="ignore").read()
+    added=0
+    for ln in raw.splitlines():
+        t=ln.rstrip().strip()
+        if t and not t.startswith("#") and t not in PHRASE_LIST:
+            add_phrase(t); added+=1
+    return "가져옴: %d개 추가"%added
+def import_phrases():
+    from tkinter import filedialog
+    p=filedialog.askopenfilename(filetypes=[("텍스트 파일","*.txt"),("모든 파일","*.*")], title="표현 가져오기")
+    if not p: return ""
+    try: return _import_from(p)
+    except Exception: debug("import 실패:\n"+traceback.format_exc()); return "가져오기 실패 (로그 확인)"
 MAX_SUG=6
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
@@ -331,8 +356,9 @@ def _line_before_caret(text, cap=80):
     if not text: return ""
     seg=text.replace("\r","\n").split("\n")[-1]
     return seg[-cap:]
-def top_matches(cur_latin, n=MAX_SUG):
+def top_matches(cur_latin, n=None):
     # 커서 위 목록용 - 키 입력을 한글로 조합(우선)하거나 영문 자판 그대로 매칭.
+    if n is None: n=MAX_SUG      # 설정에서 바뀐 개수를 호출 시점에 반영
     if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return [], ""
     for base in (compose(cur_latin), cur_latin):
         items,pref=_matches_for(base, n)
@@ -844,12 +870,14 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
-    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP
+    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG
     single_instance()
     ensure_files(); load_phrases(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
     TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
     BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
+    try: MAX_SUG=max(3,min(12,int(_cfg.get("max_sug",6) or 6)))   # 제안 개수 복원
+    except Exception: MAX_SUG=6
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -985,6 +1013,31 @@ def run_ui():
     tk.Button(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,relief="flat",
               bg="#4b5563",fg="white",cursor="hand2").pack(fill="x",pady=(4,0))
     tk.Label(root,text="빠른 토글: Ctrl + Alt + Space",font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
+    # 제안 개수 + 내보내기/가져오기
+    r_io=tk.Frame(root,bg=TH["bg"]); r_io.pack(fill="x",padx=20,pady=(0,4))
+    tk.Label(r_io,text="제안 개수",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="left")
+    _ms=tk.IntVar(value=MAX_SUG)
+    def _set_maxsug(*_):
+        global MAX_SUG
+        try: v=int(_ms.get())
+        except Exception: return
+        v=max(3,min(12,v)); MAX_SUG=v
+        try: d=load_settings(); d["max_sug"]=v; save_settings(d)
+        except Exception: pass
+    tk.Spinbox(r_io,from_=3,to=12,width=3,textvariable=_ms,command=_set_maxsug,
+               font=F,justify="center").pack(side="left",padx=(6,0))
+    def _io_msg(fn):
+        try:
+            r=fn()
+            if r:
+                from tkinter import messagebox; messagebox.showinfo("표현 관리", r, parent=root)
+                try: refill()
+                except Exception: pass
+        except Exception: debug("io 실패:\n"+traceback.format_exc())
+    tk.Button(r_io,text="⬇ 가져오기",font=F,command=lambda:_io_msg(import_phrases),relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(side="right")
+    tk.Button(r_io,text="⬆ 내보내기",font=F,command=lambda:_io_msg(export_phrases),relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(side="right",padx=(0,4))
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
