@@ -3,4 +3,7 @@ pyperclip
 pystray
 Pillow
 comtypes
+rapidfuzz
+platformdirs
+sv-ttk
 pyinstaller

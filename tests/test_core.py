@@ -214,13 +214,26 @@ def test_trash_restore():
             try: os.remove(p)
             except Exception: pass
 
+def test_fuzzy_search():
+    """RapidFuzz: 검색창 오타도 보정해 찾는다."""
+    setup()
+    res = th.reco_matches("확인해바")  # 오타(바 vs 봐)
+    check("오타 검색 → 확인해봐", "확인해봐" in res, str(res[:3]))
+
+def test_theme_compute():
+    """테마 팔레트: light/dark 구분."""
+    lt = th.compute_theme("light"); dk = th.compute_theme("dark")
+    check("light 팔레트", lt["dark"] is False and lt["bg"] == "#f5f6f8", str(lt))
+    check("dark 팔레트", dk["dark"] is True and dk["bg"] != lt["bg"], str(dk))
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
                test_backspace_clear_recovers, test_suffix_backoff,
                test_line_before_caret, test_uia_gapfill, test_usage_ranking, test_settings_roundtrip,
                test_phrases_normalization, test_chosung_search,
-               test_password_block, test_trash_restore]:
+               test_password_block, test_trash_restore,
+               test_fuzzy_search, test_theme_compute]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

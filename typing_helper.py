@@ -7,14 +7,30 @@ for _var, _p in (("TCL_LIBRARY", r"C:\py311\tcl\tcl8.6"), ("TK_LIBRARY", r"C:\py
     if _var not in os.environ and os.path.isdir(_p): os.environ[_var] = _p
 from datetime import datetime, date
 
-LOG_DIR = os.path.join(os.path.expanduser("~"), "Documents", "TypingLog")
+def _resolve_log_dir():
+    # platformdirs 로 %LOCALAPPDATA%\TypingHelper 사용(OneDrive 리디렉션 안전).
+    # 기존 ~/Documents/TypingLog 의 핵심 파일은 복사 이전하고 원본은 그대로 둔다(안전).
+    old=os.path.join(os.path.expanduser("~"), "Documents", "TypingLog")
+    try:
+        import platformdirs, shutil
+        new=platformdirs.user_data_dir("TypingHelper", appauthor=False)
+        os.makedirs(new, exist_ok=True)
+        for name in ("phrases.txt","usage.json","settings.json","phrases_trash.txt","교정프롬프트_가이드.txt"):
+            src=os.path.join(old,name); dst=os.path.join(new,name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try: shutil.copy2(src,dst)
+                except Exception: pass
+        return new
+    except Exception:
+        return old
+LOG_DIR=_resolve_log_dir()
 os.makedirs(LOG_DIR, exist_ok=True)
 def debug(m):
     try:
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v17(비번차단+휴지통+성능) boot ===")
+debug("=== v18(퍼지+데이터폴더+테마) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -30,6 +46,10 @@ try:
     HAVE_TRAY=True; debug(" tray imports OK")
 except Exception:
     HAVE_TRAY=False; debug(" tray 미탑재(무시)")
+try:
+    import sv_ttk; HAVE_SVTTK=True
+except Exception:
+    HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
@@ -165,6 +185,18 @@ def set_autostart(on):
                 except FileNotFoundError: pass
         return True
     except Exception: debug("autostart 실패:\n"+traceback.format_exc()); return False
+def _win_is_dark():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k,"AppsUseLightTheme")[0]==0
+    except Exception: return False
+def compute_theme(mode):
+    # mode: auto/light/dark -> 대시보드 색 팔레트
+    dark=_win_is_dark() if mode=="auto" else (mode=="dark")
+    if dark:
+        return {"dark":True,"bg":"#1f2430","fg":"#e5e7eb","sub":"#9aa4b2","listbg":"#0f172a","listfg":"#e5e7eb"}
+    return {"dark":False,"bg":"#f5f6f8","fg":"#1f2937","sub":"#6b7280","listbg":"#ffffff","listfg":"#111827"}
 def load_phrases():
     global PHRASE_LIST,_phrase_mtime
     try:
@@ -297,7 +329,16 @@ def reco_matches(q, k=40):
         if p.startswith(q) or (qh and p.startswith(qh)) or pl.startswith(ql): pre.append(p)
         elif q in p or (qh and qh in p) or ql in pl: sub.append(p)
         elif cho_q and _chosung(p).startswith(cho_q): cho.append(p)   # ㅂㄹㅍ -> 브리핑
-    return (pre+sub+cho)[:k]
+    results=pre+sub+cho
+    if len(results)<k:                                   # 오타 허용(RapidFuzz)로 보강
+        try:
+            from rapidfuzz import process, fuzz
+            have=set(results); pool=[p for p in PHRASE_LIST if p not in have]
+            for cand,score,_ in process.extract(qh or q, pool, scorer=fuzz.WRatio,
+                                                 limit=k-len(results), score_cutoff=70):
+                results.append(cand)
+        except Exception: pass
+    return results[:k]
 def _chosung(s):
     # 한글 음절의 첫 자음(초성)만 뽑아 잇는다. "브리핑해줘" -> "ㅂㄹㅍㅎㅈ"
     out=[]
@@ -706,6 +747,7 @@ def run_ui():
     single_instance()
     ensure_files(); load_phrases(); load_usage()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
+    TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -713,8 +755,11 @@ def run_ui():
     threading.Thread(target=caret_tracker,daemon=True).start()
 
     root=tk.Tk(); ROOT=root; root.title(APP_NAME); root.geometry("400x880"); root.minsize(400,700)
-    root.resizable(False,True); root.configure(bg="#f5f6f8")
+    root.resizable(False,True); root.configure(bg=TH["bg"])
     build_overlay(root)
+    if HAVE_SVTTK:
+        try: sv_ttk.set_theme("dark" if TH["dark"] else "light", root)
+        except Exception: debug("sv_ttk 적용 실패:\n"+traceback.format_exc())
     F=("Malgun Gothic",10); FB=("Malgun Gothic",11,"bold"); FT=("Malgun Gothic",14,"bold")
 
     AUTO_COPY=tk.BooleanVar(value=bool(_cfg.get("autocopy",False)))   # 자동복사 상태 복원
@@ -722,7 +767,7 @@ def run_ui():
         save_settings({"collecting":COLLECTING,"acomp":ACOMP,"autocopy":bool(AUTO_COPY.get())})
 
     # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
-    bottom=tk.Frame(root,bg="#f5f6f8"); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
+    bottom=tk.Frame(root,bg=TH["bg"]); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
     def show_window():
         try: root.deiconify(); root.after(10, lambda:(root.lift(), root.focus_force()))
         except Exception: pass
@@ -742,9 +787,9 @@ def run_ui():
     tk.Button(bottom,text="종료",font=F,command=quit_all,relief="flat",bg="#fecaca",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(4,0))
     root.protocol("WM_DELETE_WINDOW", quit_all)   # X = 실제 종료
 
-    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg="#f5f6f8",fg="#1f2937").pack(pady=(14,4))
-    status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg="#f5f6f8"); stat.pack()
-    info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg="#f5f6f8",fg="#6b7280").pack(pady=(2,8))
+    tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg=TH["bg"],fg=TH["fg"]).pack(pady=(14,4))
+    status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg=TH["bg"]); stat.pack()
+    info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg=TH["bg"],fg=TH["sub"]).pack(pady=(2,8))
 
     def refresh():
         if LISTENER is not None and not LISTENER.is_alive():
@@ -780,20 +825,34 @@ def run_ui():
         set_autostart(not autostart_enabled()); _refresh_as()
     as_btn.config(command=toggle_autostart); _refresh_as()
     as_btn.pack(fill="x",padx=24,pady=3)
+    # 테마 선택(자동/라이트/다크): 저장 후 재시작 시 완전 적용, sv_ttk 창은 즉시 반영
+    _thmap={"auto":"자동","light":"라이트","dark":"다크"}
+    th_btn=tk.Button(root,font=FB,relief="flat",fg="white",bg="#7c3aed",activebackground="#7c3aed",cursor="hand2",height=1)
+    def _cycle_theme():
+        order=["auto","light","dark"]; d=load_settings(); cur=d.get("theme","auto")
+        nxt=order[(order.index(cur)+1)%3] if cur in order else "auto"
+        d["theme"]=nxt; save_settings(d)
+        th_btn.config(text="🎨  테마: "+_thmap[nxt]+" (재시작 시 완전 적용)")
+        try:
+            nt=compute_theme(nxt)
+            if HAVE_SVTTK: sv_ttk.set_theme("dark" if nt["dark"] else "light", root)
+        except Exception: pass
+    th_btn.config(command=_cycle_theme, text="🎨  테마: "+_thmap.get(_cfg.get("theme","auto"),"자동"))
+    th_btn.pack(fill="x",padx=24,pady=3)
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
-                        bg="#f5f6f8",fg="#374151",padx=8,pady=6)
+                        bg=TH["bg"],fg="#374151",padx=8,pady=6)
     panel.pack(fill="both",expand=True,padx=16,pady=(8,4))
 
     q_var=tk.StringVar()
     q_entry=tk.Entry(panel,textvariable=q_var,font=("Malgun Gothic",12))
     q_entry.pack(fill="x",pady=(2,6))
 
-    listwrap=tk.Frame(panel,bg="#f5f6f8"); listwrap.pack(fill="both",expand=True)
+    listwrap=tk.Frame(panel,bg=TH["bg"]); listwrap.pack(fill="both",expand=True)
     sb=tk.Scrollbar(listwrap); sb.pack(side="right",fill="y")
     reco=tk.Listbox(listwrap,font=("Malgun Gothic",12),activestyle="none",
-                    bg="#ffffff",fg="#111827",selectbackground="#2563eb",selectforeground="white",
+                    bg=TH["listbg"],fg=TH["listfg"],selectbackground="#2563eb",selectforeground="white",
                     highlightthickness=1,highlightbackground="#d1d5db",yscrollcommand=sb.set)
     reco.pack(side="left",fill="both",expand=True); sb.config(command=reco.yview)
 
@@ -843,7 +902,7 @@ def run_ui():
     reco.bind("<Double-Button-1>", lambda e: do_copy())
     q_entry.bind("<Return>", lambda e: do_paste())
 
-    brow=tk.Frame(panel,bg="#f5f6f8"); brow.pack(fill="x",pady=(6,0))
+    brow=tk.Frame(panel,bg=TH["bg"]); brow.pack(fill="x",pady=(6,0))
     tk.Button(brow,text="복사",font=FB,command=do_copy,relief="flat",bg="#2563eb",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,3))
     tk.Button(brow,text="붙여넣기",font=FB,command=do_paste,relief="flat",bg="#7c3aed",fg="white",
@@ -860,14 +919,14 @@ def run_ui():
         msg_var.set(del_phrase(current_text())); refill()
     def do_restore():
         msg_var.set(restore_last_deleted()); refill()
-    arow=tk.Frame(panel,bg="#f5f6f8"); arow.pack(fill="x",pady=(4,0))
+    arow=tk.Frame(panel,bg=TH["bg"]); arow.pack(fill="x",pady=(4,0))
     tk.Button(arow,text="＋ 표현 추가",font=FB,command=do_add,relief="flat",bg="#059669",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,2))
     tk.Button(arow,text="선택 삭제",font=FB,command=do_del,relief="flat",bg="#b91c1c",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=2)
     tk.Button(arow,text="↩ 삭제취소",font=FB,command=do_restore,relief="flat",bg="#6b7280",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(2,0))
-    tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg="#f5f6f8",fg="#6b7280",
+    tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg=TH["bg"],fg="#6b7280",
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
     q_entry.bind("<Control-Return>", lambda e: do_add())
 
