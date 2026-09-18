@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v26(제안개수+내보내기/가져오기) boot ===")
+debug("=== v27(개수요약+글자크기) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -315,6 +315,7 @@ def import_phrases():
     try: return _import_from(p)
     except Exception: debug("import 실패:\n"+traceback.format_exc()); return "가져오기 실패 (로그 확인)"
 MAX_SUG=6
+OV_FONT=11   # 커서 위 제안 목록 글자 크기(9~20)
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
@@ -751,7 +752,7 @@ def build_overlay(root):
     try: OV.attributes("-alpha",0.95)
     except Exception: pass
     OV.configure(bg="#374151")
-    OVLIST=tk.Listbox(OV,font=("Malgun Gothic",11),activestyle="none",bd=0,
+    OVLIST=tk.Listbox(OV,font=("Malgun Gothic",OV_FONT),activestyle="none",bd=0,
                       highlightthickness=0,exportselection=False,
                       bg="#111827",fg="#e5e7eb",selectbackground="#2563eb",selectforeground="white")
     OVLIST.pack(fill="both",padx=1,pady=(1,0))
@@ -870,7 +871,7 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
-    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG
+    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT
     single_instance()
     ensure_files(); load_phrases(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
@@ -878,6 +879,8 @@ def run_ui():
     BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
     try: MAX_SUG=max(3,min(12,int(_cfg.get("max_sug",6) or 6)))   # 제안 개수 복원
     except Exception: MAX_SUG=6
+    try: OV_FONT=max(9,min(20,int(_cfg.get("ov_font",11) or 11)))   # 제안 글자 크기 복원
+    except Exception: OV_FONT=11
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -932,7 +935,7 @@ def run_ui():
             a="자동완성 ON" if ACOMP else "자동완성 OFF"
             status_var.set(f"{s}   |   {a}"); stat.config(fg="#059669" if COLLECTING else "#dc2626")
         # 예전엔 여기서 오늘자 로그 전체를 1.2초마다 다시 읽었다(파일이 클수록 UI가 느려짐).
-        info_var.set(f"오늘 {_today_count}줄 수집 · 표현 {len(PHRASE_LIST)}개 로드됨")
+        info_var.set(f"오늘 {_today_count}줄 · 표현 {len(PHRASE_LIST)}개" + (f" (★{len(PINNED)})" if PINNED else ""))
         try:
             _fa=_last_fg_app or "(없음)"; _st="꺼짐" if _last_fg_app in BLOCKED_APPS else "켜짐"
             app_var.set(f"직전 앱: {_fa} · 자동완성 {_st}\n끈 앱: {', '.join(sorted(BLOCKED_APPS)) or '없음'}")
@@ -1025,6 +1028,20 @@ def run_ui():
         try: d=load_settings(); d["max_sug"]=v; save_settings(d)
         except Exception: pass
     tk.Spinbox(r_io,from_=3,to=12,width=3,textvariable=_ms,command=_set_maxsug,
+               font=F,justify="center").pack(side="left",padx=(6,10))
+    tk.Label(r_io,text="글자 크기",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="left")
+    _fs=tk.IntVar(value=OV_FONT)
+    def _set_ovfont(*_):
+        global OV_FONT
+        try: v=int(_fs.get())
+        except Exception: return
+        v=max(9,min(20,v)); OV_FONT=v
+        try:
+            if OVLIST: OVLIST.config(font=("Malgun Gothic",v))
+        except Exception: pass
+        try: d=load_settings(); d["ov_font"]=v; save_settings(d)
+        except Exception: pass
+    tk.Spinbox(r_io,from_=9,to=20,width=3,textvariable=_fs,command=_set_ovfont,
                font=F,justify="center").pack(side="left",padx=(6,0))
     def _io_msg(fn):
         try:
