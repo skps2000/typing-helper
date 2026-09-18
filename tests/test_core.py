@@ -226,6 +226,37 @@ def test_theme_compute():
     check("light 팔레트", lt["dark"] is False and lt["bg"] == "#f5f6f8", str(lt))
     check("dark 팔레트", dk["dark"] is True and dk["bg"] != lt["bg"], str(dk))
 
+def test_app_block():
+    """앱별 차단: _app_blocked면 제안 억제."""
+    setup(); th.ACOMP = True; th._in_password = False; th._app_blocked = False
+    th._cur = list("ghkrdls"); th._uia_prefix = "브리"; th._update_sug()
+    check("차단 안됨: 제안 나옴", th.S["items"] != [], str(th.S["items"][:1]))
+    th._app_blocked = True; th._update_sug()
+    check("앱 차단: 제안 억제", th.S["items"] == [], str(th.S["items"]))
+    th._app_blocked = False; th._cur = []; th._uia_prefix = ""
+
+def test_hotkey_toggle():
+    """빠른 토글 핫키: ACOMP on/off + 설정 저장."""
+    import tempfile
+    old = th.SETTINGS_PATH
+    th.SETTINGS_PATH = os.path.join(tempfile.gettempdir(), "th_hk_unit.json")
+    try:
+        th.ACOMP = True
+        th._toggle_acomp_hotkey()
+        check("핫키 토글 → OFF", th.ACOMP is False, str(th.ACOMP))
+        check("핫키 설정 저장", th.load_settings().get("acomp") is False, str(th.load_settings()))
+        th._toggle_acomp_hotkey()
+        check("핫키 토글 → ON", th.ACOMP is True, str(th.ACOMP))
+    finally:
+        try: os.remove(th.SETTINGS_PATH)
+        except Exception: pass
+        th.SETTINGS_PATH = old; th.ACOMP = True
+
+def test_proc_name():
+    """_proc_name: 현재 프로세스 실행파일명."""
+    name = th._proc_name(os.getpid())
+    check("_proc_name 자기 프로세스", name.endswith(".exe") and len(name) > 4, name)
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -233,7 +264,8 @@ def main():
                test_line_before_caret, test_uia_gapfill, test_usage_ranking, test_settings_roundtrip,
                test_phrases_normalization, test_chosung_search,
                test_password_block, test_trash_restore,
-               test_fuzzy_search, test_theme_compute]:
+               test_fuzzy_search, test_theme_compute,
+               test_app_block, test_hotkey_toggle, test_proc_name]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v18(퍼지+데이터폴더+테마) boot ===")
+debug("=== v19(앱별 on/off+핫키) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -353,9 +353,10 @@ def _is_chosung_query(q):
 
 # ---- 상태 ----
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
-_ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
+_ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True; _alt=False
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
 USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0; _in_password=False   # UIA 커서앞 텍스트 + 최근타이핑 + 비번칸 여부
+_app_blocked=False; _last_fg_app=""; _fg_pid_cache=0; BLOCKED_APPS=set()   # 앱별 자동완성 on/off
 OUR_PID=ctypes.windll.kernel32.GetCurrentProcessId()  # 우리 창엔 제안하지 않기 위한 식별
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
@@ -374,13 +375,16 @@ _KEEP_CUR=frozenset({
 })
 
 def on_press(key):
-    global _ctrl,_last_input,_paste,_injecting,_last_key
+    global _ctrl,_last_input,_paste,_injecting,_last_key,_alt
     # 여기서 예외가 새어나가면 pynput이 리스너를 조용히 중단시킨다.
     # join()을 하는 곳이 없어서 수집이 멎어도 아무도 모른다 - 전체를 감싼다.
     try:
         _last_key=time.time()
         if _injecting: return
         if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=True; return
+        if key in (keyboard.Key.alt_l,keyboard.Key.alt_r,keyboard.Key.alt_gr,keyboard.Key.alt): _alt=True; return
+        if _ctrl and _alt and key==keyboard.Key.space:   # 빠른 토글: 자동완성 on/off
+            _toggle_acomp_hotkey(); return
         vk=getattr(key,"vk",None)
         if _ctrl and vk in (VK_C,VK_V,VK_X):
             if vk==VK_V: _paste=True
@@ -411,8 +415,9 @@ def on_press(key):
         debug("on_press 예외:\n"+traceback.format_exc())
 
 def on_release(key):
-    global _ctrl
+    global _ctrl,_alt
     if key in (keyboard.Key.ctrl_l,keyboard.Key.ctrl_r): _ctrl=False
+    elif key in (keyboard.Key.alt_l,keyboard.Key.alt_r,keyboard.Key.alt_gr,keyboard.Key.alt): _alt=False
 
 def _set_sug(items,pref,idx=0,close=False):
     # ver를 '맨 마지막'에 올려야 그리는 쪽이 반쯤 갱신된 상태를 보지 않는다.
@@ -420,8 +425,17 @@ def _set_sug(items,pref,idx=0,close=False):
     S["rem"]=items[idx][len(pref):] if items else ""
     S["close"]=close   # True=즉시 숨김(Esc/삽입), False=잠깐 유지 후 숨김(편집 중 깜빡임 방지)
     S["ver"]+=1
+def _persist_acomp():
+    try:
+        d=load_settings(); d["acomp"]=ACOMP; save_settings(d)
+    except Exception: pass
+def _toggle_acomp_hotkey():
+    global ACOMP
+    ACOMP=not ACOMP
+    if not ACOMP: _set_sug([],"")
+    _persist_acomp()
 def _update_sug():
-    if _in_password or not ACOMP: _set_sug([],""); return
+    if _in_password or _app_blocked or not ACOMP: _set_sug([],""); return
     try: _cur_s="".join(_cur)      # 훅/COM 두 스레드가 부르므로 동시변경 대비 스냅샷
     except Exception: _cur_s=""
     items,pref=top_matches(_cur_s)                     # 키 입력 조합(즉각)
@@ -495,11 +509,30 @@ def caret_xy():
     try:
         pt=wintypes.POINT(); u32.GetCursorPos(ctypes.byref(pt)); return pt.x+12, pt.y+18
     except Exception: return None
+_k32=ctypes.windll.kernel32
+_k32.OpenProcess.restype=wintypes.HANDLE
+_k32.OpenProcess.argtypes=[wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_k32.QueryFullProcessImageNameW.restype=wintypes.BOOL
+_k32.QueryFullProcessImageNameW.argtypes=[wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+_k32.CloseHandle.argtypes=[wintypes.HANDLE]
+def _proc_name(pid):
+    # 포커스 창 프로세스의 실행파일명(소문자). 앱별 on/off 판별용.
+    if not pid: return ""
+    h=_k32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h: return ""
+    try:
+        buf=ctypes.create_unicode_buffer(260); sz=wintypes.DWORD(260)
+        if _k32.QueryFullProcessImageNameW(h,0,buf,ctypes.byref(sz)):
+            return os.path.basename(buf.value).lower()
+    except Exception: pass
+    finally:
+        _k32.CloseHandle(h)
+    return ""
 _caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으면 caret_xy 폴백)
 def caret_tracker():
     # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
     # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
-    global _caret_xy,_uia_prefix,_in_password
+    global _caret_xy,_uia_prefix,_in_password,_app_blocked,_last_fg_app,_fg_pid_cache
     try:
         import comtypes, comtypes.client as _cc
         try: comtypes.CoInitialize()
@@ -520,6 +553,14 @@ def caret_tracker():
             if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안하지 않는다
                 if _uia_prefix: _uia_prefix=""
                 _in_password=False; time.sleep(0.12); continue
+            pid=fg_pid.value
+            if pid!=_fg_pid_cache:
+                _fg_pid_cache=pid; _last_fg_app=_proc_name(pid)   # 포커스 앱 실행파일명 캐시
+            _app_blocked=_last_fg_app in BLOCKED_APPS
+            if _app_blocked:                           # 이 앱은 자동완성 끔
+                if _uia_prefix: _uia_prefix=""
+                if S["items"]: _set_sug([],"",close=True)
+                time.sleep(0.12); continue
             el=uia.GetFocusedElement()
             try: pw=bool(el.CurrentIsPassword) if el is not None else False   # 비밀번호 필드?
             except Exception: pw=False
@@ -748,6 +789,7 @@ def run_ui():
     ensure_files(); load_phrases(); load_usage()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
     TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
+    BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -764,7 +806,7 @@ def run_ui():
 
     AUTO_COPY=tk.BooleanVar(value=bool(_cfg.get("autocopy",False)))   # 자동복사 상태 복원
     def _save_cfg():
-        save_settings({"collecting":COLLECTING,"acomp":ACOMP,"autocopy":bool(AUTO_COPY.get())})
+        d=load_settings(); d.update({"collecting":COLLECTING,"acomp":ACOMP,"autocopy":bool(AUTO_COPY.get())}); save_settings(d)
 
     # 하단 바를 먼저 bottom에 고정 -> 위 내용이 늘어도 절대 잘리지 않는다(기존 '하단 버튼 잘림' 대응)
     bottom=tk.Frame(root,bg=TH["bg"]); bottom.pack(side="bottom",fill="x",pady=(10,10),padx=24)
@@ -800,6 +842,10 @@ def run_ui():
             status_var.set(f"{s}   |   {a}"); stat.config(fg="#059669" if COLLECTING else "#dc2626")
         # 예전엔 여기서 오늘자 로그 전체를 1.2초마다 다시 읽었다(파일이 클수록 UI가 느려짐).
         info_var.set(f"오늘 {_today_count}줄 수집 · 표현 {len(PHRASE_LIST)}개 로드됨")
+        try:
+            _fa=_last_fg_app or "(없음)"; _st="꺼짐" if _last_fg_app in BLOCKED_APPS else "켜짐"
+            app_var.set(f"직전 앱: {_fa} · 자동완성 {_st}\n끈 앱: {', '.join(sorted(BLOCKED_APPS)) or '없음'}")
+        except Exception: pass
         root.after(1200,refresh)
     def toggle_collect():
         global COLLECTING; COLLECTING=not COLLECTING; _save_cfg()
@@ -839,6 +885,24 @@ def run_ui():
         except Exception: pass
     th_btn.config(command=_cycle_theme, text="🎨  테마: "+_thmap.get(_cfg.get("theme","auto"),"자동"))
     th_btn.pack(fill="x",padx=24,pady=3)
+    # 앱별 자동완성 on/off
+    appf=tk.LabelFrame(root,text=" 앱별 자동완성 ",font=F,bg=TH["bg"],fg=TH["sub"],padx=8,pady=4)
+    appf.pack(fill="x",padx=16,pady=(2,2))
+    app_var=tk.StringVar(value="직전 앱을 확인 중...")
+    tk.Label(appf,textvariable=app_var,font=("Malgun Gothic",9),bg=TH["bg"],fg=TH["sub"],
+             anchor="w",justify="left",wraplength=340).pack(fill="x")
+    def _toggle_app():
+        name=_last_fg_app
+        if not name:
+            app_var.set("직전에 쓰던 다른 앱이 없습니다. 다른 창을 클릭한 뒤 다시 눌러주세요."); return
+        if name in BLOCKED_APPS: BLOCKED_APPS.discard(name)
+        else: BLOCKED_APPS.add(name)
+        try:
+            d=load_settings(); d["disabled_apps"]=sorted(BLOCKED_APPS); save_settings(d)
+        except Exception: pass
+    tk.Button(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(fill="x",pady=(4,0))
+    tk.Label(root,text="빠른 토글: Ctrl + Alt + Space",font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
