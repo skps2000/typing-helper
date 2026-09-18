@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v24(긴문장 붙여넣기 삽입+첫실행 안내) boot ===")
+debug("=== v25(자리표시자+표현 고정) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -152,6 +152,24 @@ def record_use(text):
     if not text: return
     USAGE[text]=USAGE.get(text,0)+1; save_usage()
 def _usage_of(t): return USAGE.get(t,0)
+PINNED=set(); PINNED_PATH=os.path.join(LOG_DIR,"pinned.json")
+def load_pinned():
+    global PINNED
+    try:
+        import json
+        with open(PINNED_PATH,encoding="utf-8") as f: PINNED=set(json.load(f) or [])
+    except Exception: PINNED=set()
+def save_pinned():
+    try:
+        import json
+        with open(PINNED_PATH,"w",encoding="utf-8") as f: json.dump(sorted(PINNED),f,ensure_ascii=False)
+    except Exception: pass
+def _is_pinned(t): return t in PINNED
+def toggle_pin(t):
+    t=(t or "").strip()
+    if not t: return "고정할 표현을 목록에서 고르세요"
+    if t in PINNED: PINNED.discard(t); save_pinned(); return "고정 해제: "+t
+    PINNED.add(t); save_pinned(); return "고정됨 ★: "+t
 SETTINGS_PATH=os.path.join(LOG_DIR,"settings.json")
 def load_settings():
     try:
@@ -284,9 +302,9 @@ def _match_from_boundary(prefix, n):
             if len(tail)>L and (tail.startswith(prefix) or tail.lower().startswith(pl)):
                 if tail not in seen:
                     seen.add(tail)
-                    ranked.append((_usage_of(tail), 0 if pos==0 else 1, len(tail), tail))  # 자주쓴것>시작>짧은것
+                    ranked.append((1 if _is_pinned(tail) else 0, _usage_of(tail), 0 if pos==0 else 1, len(tail), tail))  # 고정>자주쓴것>시작>짧은것
                 break   # 한 표현에서 가장 이른 경계만 사용
-    ranked.sort(key=lambda x:(-x[0],x[1],x[2]))
+    ranked.sort(key=lambda x:(-x[0],-x[1],x[2],x[3]))
     return [t for *_,t in ranked][:n]
 def _suffix_candidates(s):
     # "그래서 확인 후" -> ["그래서 확인 후", "확인 후", "후"] (전체 먼저, 뒤 단어로 백오프)
@@ -343,6 +361,7 @@ def reco_matches(q, k=40):
                                                  limit=k-len(results), score_cutoff=70):
                 results.append(cand)
         except Exception: pass
+    results.sort(key=lambda p: p not in PINNED)   # 고정(★) 표현을 위로(안정 정렬)
     return results[:k]
 def _chosung(s):
     # 한글 음절의 첫 자음(초성)만 뽑아 잇는다. "브리핑해줘" -> "ㅂㄹㅍㅎㅈ"
@@ -479,6 +498,16 @@ def do_insert():
         debug("insert fail:\n"+traceback.format_exc())
         try: KBD.type(rem)                 # 클립보드 경로 실패 시 타이핑으로 폴백
         except Exception: pass
+    try:                                   # 자리표시자 {..}: 첫 자리로 커서 이동 + 선택
+        i=rem.find("{"); j=(rem.find("}", i) if i>=0 else -1)
+        if 0<=i<j:
+            for _ in range(len(rem)-(j+1)):
+                KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+            KBD.press(keyboard.Key.shift)
+            for _ in range(j-i+1):
+                KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+            KBD.release(keyboard.Key.shift)
+    except Exception: debug("placeholder nav 실패:\n"+traceback.format_exc())
     time.sleep(0.03); _injecting=False
     if acc: record_use(acc)
     _cur.clear(); _set_sug([],"",close=True)
@@ -817,7 +846,7 @@ def single_instance():
 def run_ui():
     global LISTENER,ROOT,_today_count,COLLECTING,ACOMP
     single_instance()
-    ensure_files(); load_phrases(); load_usage()
+    ensure_files(); load_phrases(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
     TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
     BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
@@ -991,13 +1020,12 @@ def run_ui():
 
     def current_text():
         sel=reco.curselection()
-        if sel: return reco.get(sel[0])
-        if reco.size()>0: return reco.get(0)
-        return ""
+        t = reco.get(sel[0]) if sel else (reco.get(0) if reco.size()>0 else "")
+        return t[2:] if t.startswith("★ ") else t
     def refill(*_):
         items=reco_matches(_q().strip())
         reco.delete(0,tk.END)
-        for it in items: reco.insert(tk.END,it)
+        for it in items: reco.insert(tk.END, ("★ "+it) if it in PINNED else it)
         if reco.size()>0: reco.selection_clear(0,tk.END); reco.selection_set(0)
         if AUTO_COPY.get() and items and pyperclip:
             try: pyperclip.copy(items[0])
@@ -1052,12 +1080,16 @@ def run_ui():
         msg_var.set(del_phrase(current_text())); refill()
     def do_restore():
         msg_var.set(restore_last_deleted()); refill()
+    def do_pin():
+        msg_var.set(toggle_pin(current_text())); refill()
     arow=tk.Frame(panel,bg=TH["bg"]); arow.pack(fill="x",pady=(4,0))
-    tk.Button(arow,text="＋ 표현 추가",font=FB,command=do_add,relief="flat",bg="#059669",fg="white",
+    tk.Button(arow,text="＋ 추가",font=FB,command=do_add,relief="flat",bg="#059669",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,2))
-    tk.Button(arow,text="선택 삭제",font=FB,command=do_del,relief="flat",bg="#b91c1c",fg="white",
+    tk.Button(arow,text="★ 고정",font=FB,command=do_pin,relief="flat",bg="#d97706",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=2)
-    tk.Button(arow,text="↩ 삭제취소",font=FB,command=do_restore,relief="flat",bg="#6b7280",fg="white",
+    tk.Button(arow,text="삭제",font=FB,command=do_del,relief="flat",bg="#b91c1c",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=2)
+    tk.Button(arow,text="↩ 복원",font=FB,command=do_restore,relief="flat",bg="#6b7280",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(2,0))
     tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg=TH["bg"],fg="#6b7280",
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))

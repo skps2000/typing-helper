@@ -308,6 +308,41 @@ def test_long_insert_clipboard():
         try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_unit.json"))
         except Exception: pass
 
+def test_pin_ranking():
+    """고정(★)한 표현이 최상단으로."""
+    setup(); th.PINNED = set(); th.USAGE = {}
+    base, _ = th.top_matches("ghkrdls")  # 확인
+    th.PINNED = {"확인해봐"}
+    pinned, _ = th.top_matches("ghkrdls")
+    check("고정 표현 최상단", pinned and pinned[0] == "확인해봐",
+          str(pinned[:2]) + " (기본:" + str(base[:1]) + ")")
+    th.PINNED = set()
+
+def test_placeholder_nav():
+    """자리표시자 {..} 있으면 삽입 후 왼쪽 이동+Shift 선택 키를 보낸다."""
+    import tempfile
+    calls = {"left": 0, "shift": 0, "typed": []}
+    class FakeKBD:
+        def type(self, t): calls["typed"].append(t)
+        def press(self, k):
+            n = getattr(k, "name", "")
+            if "left" in n: calls["left"] += 1
+            if "shift" in n: calls["shift"] += 1
+        def release(self, k): pass
+    oldKBD, oldPC, oldUP = th.KBD, th.pyperclip, th.USAGE_PATH
+    th.KBD = FakeKBD(); th.pyperclip = None   # 타이핑 경로 강제
+    th.USAGE_PATH = os.path.join(tempfile.gettempdir(), "th_usage_ph.json")
+    try:
+        th.S = {"items": ["안녕하 세요 {이름}님"], "idx": 0, "pref": "안녕하",
+                "rem": " 세요 {이름}님", "ver": 0, "close": False}
+        th._cur = list("x"); th.do_insert()
+        check("자리표시자: 왼쪽 이동", calls["left"] > 0, str(calls))
+        check("자리표시자: Shift 선택", calls["shift"] > 0, str(calls))
+    finally:
+        th.KBD = oldKBD; th.pyperclip = oldPC; th.USAGE_PATH = oldUP
+        try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_ph.json"))
+        except Exception: pass
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -318,7 +353,7 @@ def main():
                test_fuzzy_search, test_theme_compute,
                test_app_block, test_hotkey_toggle, test_proc_name,
                test_sensitive_digits, test_self_focus_block, test_version,
-               test_long_insert_clipboard]:
+               test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")
