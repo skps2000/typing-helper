@@ -276,6 +276,38 @@ def test_self_focus_block():
 def test_version():
     check("APP_VERSION 존재", isinstance(th.APP_VERSION, str) and th.APP_VERSION[0].isdigit(), th.APP_VERSION)
 
+def test_long_insert_clipboard():
+    """긴 문장은 클립보드 붙여넣기, 짧은 문장은 타이핑으로 삽입."""
+    import tempfile
+    calls = {"copied": [], "typed": [], "vpaste": 0}
+    class FakeKBD:
+        def type(self, t): calls["typed"].append(t)
+        def press(self, k):
+            if k == "v": calls["vpaste"] += 1
+        def release(self, k): pass
+    class FakePC:
+        def __init__(self): self._c = "원래클립"
+        def paste(self): return self._c
+        def copy(self, t): self._c = t; calls["copied"].append(t)
+    oldKBD, oldPC, oldUP = th.KBD, th.pyperclip, th.USAGE_PATH
+    th.KBD = FakeKBD(); th.pyperclip = FakePC()
+    th.USAGE_PATH = os.path.join(tempfile.gettempdir(), "th_usage_unit.json")
+    try:
+        th.S = {"items": ["확인 아주 긴 문장 삽입 테스트입니다"], "idx": 0,
+                "pref": "확인", "rem": " 아주 긴 문장 삽입 테스트입니다", "ver": 0, "close": False}
+        th._cur = list("x"); th.do_insert()
+        check("긴 문장: 붙여넣기 사용", calls["vpaste"] >= 1 and any("긴 문장" in c for c in calls["copied"]), str(calls))
+        check("긴 문장: 타이핑 미사용", calls["typed"] == [], str(calls["typed"]))
+        check("클립보드 원복", th.pyperclip.paste() == "원래클립", th.pyperclip.paste())
+        calls["typed"].clear()
+        th.S = {"items": ["가나"], "idx": 0, "pref": "가", "rem": "나", "ver": 0, "close": False}
+        th.do_insert()
+        check("짧은 문장: 타이핑 사용", calls["typed"] == ["나"], str(calls["typed"]))
+    finally:
+        th.KBD = oldKBD; th.pyperclip = oldPC; th.USAGE_PATH = oldUP
+        try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_unit.json"))
+        except Exception: pass
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -285,7 +317,8 @@ def main():
                test_password_block, test_trash_restore,
                test_fuzzy_search, test_theme_compute,
                test_app_block, test_hotkey_toggle, test_proc_name,
-               test_sensitive_digits, test_self_focus_block, test_version]:
+               test_sensitive_digits, test_self_focus_block, test_version,
+               test_long_insert_clipboard]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

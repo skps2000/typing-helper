@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v23(수집 안정성+토글 상태표시) boot ===")
+debug("=== v24(긴문장 붙여넣기 삽입+첫실행 안내) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -455,14 +455,30 @@ def move_sel(d):
     _set_sug(S["items"],S["pref"],(S["idx"]+d)%n)
 
 def do_insert():
-    global _injecting
+    global _injecting,_last_clip
     rem=S["rem"]
     if not rem: return
     try: acc=S["items"][S["idx"]] if S["items"] else None    # 채택한 전체 후보
     except Exception: acc=None
     _injecting=True
-    try: KBD.type(rem)
-    except Exception: debug("insert fail:\n"+traceback.format_exc())
+    try:
+        if len(rem)>=6 and pyperclip:      # 긴 문장: 클립보드 붙여넣기로 빠르게(한 글자씩보다 안정적)
+            orig=None
+            try: orig=pyperclip.paste()
+            except Exception: orig=None
+            _last_clip=rem                 # writer가 이 삽입을 '복사됨'으로 기록하지 않게
+            pyperclip.copy(rem); time.sleep(0.02)
+            KBD.press(keyboard.Key.ctrl); KBD.press("v"); KBD.release("v"); KBD.release(keyboard.Key.ctrl)
+            time.sleep(0.12)
+            if orig is not None:           # 사용자 클립보드 원상복구
+                try: pyperclip.copy(orig); _last_clip=orig
+                except Exception: pass
+        else:
+            KBD.type(rem)
+    except Exception:
+        debug("insert fail:\n"+traceback.format_exc())
+        try: KBD.type(rem)                 # 클립보드 경로 실패 시 타이핑으로 폴백
+        except Exception: pass
     time.sleep(0.03); _injecting=False
     if acc: record_use(acc)
     _cur.clear(); _set_sug([],"",close=True)
@@ -1048,6 +1064,21 @@ def run_ui():
     q_entry.bind("<Control-Return>", lambda e: do_paste())
 
     _set_ph(); refill()   # 시작 시 placeholder 표시
+    if not _cfg.get("onboarded"):         # 첫 실행 간단 안내(1회)
+        def _onboard():
+            try:
+                from tkinter import messagebox
+                messagebox.showinfo("타이핑 도우미 시작하기",
+                    "1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
+                    "2) ↑/↓로 고르고 Tab으로 채웁니다 (Esc로 닫기).\n"
+                    "3) 자주 쓰는 문구는 아래 상자에 쓰고 Enter로 추가.\n"
+                    "4) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
+                    "표현은 '교정결과(phrases.txt)'로 관리됩니다.", parent=root)
+            except Exception: pass
+            try:
+                d=load_settings(); d["onboarded"]=True; save_settings(d)
+            except Exception: pass
+        root.after(700,_onboard)
     start_tray(on_open=lambda: post_ui(show_window), on_quit=lambda: post_ui(quit_all),
                on_collect=toggle_collect, on_acomp=toggle_acomp)
     refresh(); overlay_tick(); debug("mainloop 진입"); root.mainloop()
