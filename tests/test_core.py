@@ -379,6 +379,20 @@ def test_import_export():
             try: os.remove(p)
             except Exception: pass
 
+def test_sorted_for_display():
+    """추천 목록 정렬: 관련도(원순서)/가나다/최근, 고정(★) 항상 위."""
+    th.PHRASE_LIST = ["가", "다", "나"]; th.PINNED = set()
+    items = ["다", "가", "나"]
+    check("관련도=원순서", th._sorted_for_display(items, "관련도") == items, str(items))
+    check("가나다 정렬", th._sorted_for_display(items, "가나다") == ["가", "나", "다"],
+          str(th._sorted_for_display(items, "가나다")))
+    check("최근 정렬(뒤 index 먼저)", th._sorted_for_display(items, "최근") == ["나", "다", "가"],
+          str(th._sorted_for_display(items, "최근")))
+    th.PINNED = {"다"}
+    check("고정 우선(가나다)", th._sorted_for_display(items, "가나다")[0] == "다",
+          str(th._sorted_for_display(items, "가나다")))
+    th.PINNED = set()
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -390,7 +404,7 @@ def main():
                test_app_block, test_hotkey_toggle, test_proc_name,
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
-               test_maxsug_runtime, test_import_export]:
+               test_maxsug_runtime, test_import_export, test_sorted_for_display]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

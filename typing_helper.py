@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v29(클릭 삽입+폰트 폴백) boot ===")
+debug("=== v30(hover 강조+목록 정렬) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -401,6 +401,11 @@ def reco_matches(q, k=40):
         except Exception: pass
     results.sort(key=lambda p: p not in PINNED)   # 고정(★) 표현을 위로(안정 정렬)
     return results[:k]
+def _sorted_for_display(items, mode):
+    # 대시보드 추천 목록 정렬. 고정(★)은 항상 위. mode: 관련도/가나다/최근
+    if mode=="가나다": return sorted(items, key=lambda p:(p not in PINNED, p))
+    if mode=="최근":   return sorted(items, key=lambda p:(p not in PINNED, -(PHRASE_LIST.index(p) if p in PHRASE_LIST else 0)))
+    return items       # 관련도(기본): reco_matches 순서 유지
 def _chosung(s):
     # 한글 음절의 첫 자음(초성)만 뽑아 잇는다. "브리핑해줘" -> "ㅂㄹㅍㅎㅈ"
     out=[]
@@ -790,6 +795,22 @@ def build_overlay(root):
             threading.Thread(target=do_insert, daemon=True).start()
         except Exception: debug("ov click:\n"+traceback.format_exc())
     OVLIST.bind("<ButtonRelease-1>", _on_ov_click)        # 마우스로 골라 바로 삽입
+    _ov_hover=[-1]
+    def _ov_reset(i):
+        if 0<=i<OVLIST.size():
+            try: OVLIST.itemconfig(i, background=OVLIST.cget("bg"), foreground=OVLIST.cget("fg"))
+            except Exception: pass
+    def _on_ov_motion(e):
+        try:
+            i=OVLIST.nearest(e.y)
+            if i==_ov_hover[0]: return
+            _ov_reset(_ov_hover[0]); _ov_hover[0]=i
+            if 0<=i<OVLIST.size(): OVLIST.itemconfig(i, background="#374151", foreground="white")
+        except Exception: pass
+    def _on_ov_leave(e):
+        _ov_reset(_ov_hover[0]); _ov_hover[0]=-1
+    OVLIST.bind("<Motion>", _on_ov_motion)
+    OVLIST.bind("<Leave>", _on_ov_leave)
     OV.withdraw()
 def _place(xy):
     x,y=xy; w=OV.winfo_reqwidth(); h=OV.winfo_reqheight()
@@ -1094,8 +1115,21 @@ def run_ui():
     panel.pack(fill="both",expand=True,padx=16,pady=(8,4))
 
     q_var=tk.StringVar()
-    q_entry=tk.Entry(panel,textvariable=q_var,font=(UIFONT,12))
-    q_entry.pack(fill="x",pady=(2,6))
+    srow=tk.Frame(panel,bg=TH["bg"]); srow.pack(fill="x",pady=(2,6))
+    q_entry=tk.Entry(srow,textvariable=q_var,font=(UIFONT,12))
+    q_entry.pack(side="left",fill="x",expand=True)
+    _sortmodes=["관련도","가나다","최근"]
+    _cs=_cfg.get("reco_sort","관련도")
+    if _cs not in _sortmodes: _cs="관련도"
+    _sortvar=tk.StringVar(value=_cs)
+    sort_btn=tk.Button(srow,text="정렬: "+_cs,font=F,relief="flat",bg="#4b5563",fg="white",cursor="hand2")
+    def _cycle_sort():
+        m=_sortmodes[(_sortmodes.index(_sortvar.get())+1)%3]
+        _sortvar.set(m); sort_btn.config(text="정렬: "+m)
+        try: d=load_settings(); d["reco_sort"]=m; save_settings(d)
+        except Exception: pass
+        refill()
+    sort_btn.config(command=_cycle_sort); sort_btn.pack(side="right",padx=(6,0))
     _PH="검색어 입력 · 새 문구는 Enter로 추가"           # 흐린 안내(placeholder)
     def _q():
         return "" if getattr(q_entry,"_ph",False) else q_var.get()
@@ -1125,7 +1159,7 @@ def run_ui():
         t = reco.get(sel[0]) if sel else (reco.get(0) if reco.size()>0 else "")
         return t[2:] if t.startswith("★ ") else t
     def refill(*_):
-        items=reco_matches(_q().strip())
+        items=_sorted_for_display(reco_matches(_q().strip()), _sortvar.get())
         reco.delete(0,tk.END)
         for it in items: reco.insert(tk.END, ("★ "+it) if it in PINNED else it)
         if reco.size()>0: reco.selection_clear(0,tk.END); reco.selection_set(0)
