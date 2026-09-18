@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v21(직관성: Enter추가+힌트) boot ===")
+debug("=== v22(placeholder+대시보드 정리) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -869,38 +869,45 @@ def run_ui():
         global ACOMP; ACOMP=not ACOMP
         if not ACOMP: _set_sug([],"")
         _save_cfg()
-    def mkbtn(txt,cmd,bg="#2563eb",fg="white"):
-        tk.Button(root,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
-                  activebackground=bg,cursor="hand2",height=1).pack(fill="x",padx=24,pady=3)
-    mkbtn("수집 켜기 / 끄기", toggle_collect, bg="#374151")
-    mkbtn("자동완성 켜기 / 끄기", toggle_acomp, bg="#4b5563")
-    mkbtn("📋  교정 프롬프트 가이드 열기", lambda:_open(GUIDE))
-    mkbtn("📁  수집 데이터 폴더 열기", lambda:_open(LOG_DIR))
-    mkbtn("📝  교정결과(phrases.txt) 열기", lambda:_open(PHRASES))
-    # 부팅 시 자동시작 토글
-    as_btn=tk.Button(root,font=FB,relief="flat",fg="white",cursor="hand2",height=1)
+    def mkbtn(parent,txt,cmd,bg="#2563eb",fg="white",side_pad=(0,0)):
+        b=tk.Button(parent,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
+                    activebackground=bg,cursor="hand2",height=1)
+        b.pack(side="left",expand=True,fill="x",padx=side_pad); return b
+    def mkrow(pady=3):
+        fr=tk.Frame(root,bg=TH["bg"]); fr.pack(fill="x",padx=20,pady=pady); return fr
+    # 상태 토글 한 줄
+    r_tog=mkrow()
+    mkbtn(r_tog,"● 수집 켜기/끄기", toggle_collect, bg="#374151", side_pad=(0,3))
+    mkbtn(r_tog,"✓ 자동완성 켜기/끄기", toggle_acomp, bg="#4b5563", side_pad=(3,0))
+    # 열기 한 줄
+    r_open=mkrow()
+    mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), side_pad=(0,2))
+    mkbtn(r_open,"📁 폴더", lambda:_open(LOG_DIR), side_pad=(2,2))
+    mkbtn(r_open,"📝 교정결과", lambda:_open(PHRASES), side_pad=(2,0))
+    # 설정 한 줄: 자동시작 + 테마
+    r_set=mkrow()
+    as_btn=tk.Button(r_set,font=FB,relief="flat",fg="white",cursor="hand2",height=1)
     def _refresh_as():
         on=autostart_enabled()
-        as_btn.config(text=("🔌  부팅 시 자동시작: 켜짐" if on else "🔌  부팅 시 자동시작: 꺼짐"),
+        as_btn.config(text=("🔌 자동시작: 켜짐" if on else "🔌 자동시작: 꺼짐"),
                       bg=("#0d9488" if on else "#6b7280"), activebackground=("#0d9488" if on else "#6b7280"))
     def toggle_autostart():
         set_autostart(not autostart_enabled()); _refresh_as()
     as_btn.config(command=toggle_autostart); _refresh_as()
-    as_btn.pack(fill="x",padx=24,pady=3)
-    # 테마 선택(자동/라이트/다크): 저장 후 재시작 시 완전 적용, sv_ttk 창은 즉시 반영
+    as_btn.pack(side="left",expand=True,fill="x",padx=(0,3))
     _thmap={"auto":"자동","light":"라이트","dark":"다크"}
-    th_btn=tk.Button(root,font=FB,relief="flat",fg="white",bg="#7c3aed",activebackground="#7c3aed",cursor="hand2",height=1)
+    th_btn=tk.Button(r_set,font=FB,relief="flat",fg="white",bg="#7c3aed",activebackground="#7c3aed",cursor="hand2",height=1)
     def _cycle_theme():
         order=["auto","light","dark"]; d=load_settings(); cur=d.get("theme","auto")
         nxt=order[(order.index(cur)+1)%3] if cur in order else "auto"
         d["theme"]=nxt; save_settings(d)
-        th_btn.config(text="🎨  테마: "+_thmap[nxt]+" (재시작 시 완전 적용)")
+        th_btn.config(text="🎨 테마: "+_thmap[nxt])
         try:
             nt=compute_theme(nxt)
             if HAVE_SVTTK: sv_ttk.set_theme("dark" if nt["dark"] else "light", root)
         except Exception: pass
-    th_btn.config(command=_cycle_theme, text="🎨  테마: "+_thmap.get(_cfg.get("theme","auto"),"자동"))
-    th_btn.pack(fill="x",padx=24,pady=3)
+    th_btn.config(command=_cycle_theme, text="🎨 테마: "+_thmap.get(_cfg.get("theme","auto"),"자동"))
+    th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
     # 앱별 자동완성 on/off
     appf=tk.LabelFrame(root,text=" 앱별 자동완성 ",font=F,bg=TH["bg"],fg=TH["sub"],padx=8,pady=4)
     appf.pack(fill="x",padx=16,pady=(2,2))
@@ -928,6 +935,22 @@ def run_ui():
     q_var=tk.StringVar()
     q_entry=tk.Entry(panel,textvariable=q_var,font=("Malgun Gothic",12))
     q_entry.pack(fill="x",pady=(2,6))
+    _PH="검색어 입력 · 새 문구는 Enter로 추가"           # 흐린 안내(placeholder)
+    def _q():
+        return "" if getattr(q_entry,"_ph",False) else q_var.get()
+    def _clear_ph(*_):
+        if getattr(q_entry,"_ph",False):
+            q_entry._ph=False; q_entry.delete(0,tk.END)
+            try: q_entry.config(fg=TH["listfg"])
+            except Exception: pass
+    def _set_ph(*_):
+        if not q_var.get():
+            q_entry._ph=True
+            try: q_entry.config(fg=TH["sub"])
+            except Exception: pass
+            q_entry.insert(0,_PH)
+    q_entry.bind("<FocusIn>", _clear_ph, add="+")
+    q_entry.bind("<FocusOut>", _set_ph, add="+")
 
     listwrap=tk.Frame(panel,bg=TH["bg"]); listwrap.pack(fill="both",expand=True)
     sb=tk.Scrollbar(listwrap); sb.pack(side="right",fill="y")
@@ -942,7 +965,7 @@ def run_ui():
         if reco.size()>0: return reco.get(0)
         return ""
     def refill(*_):
-        items=reco_matches(q_var.get().strip())
+        items=reco_matches(_q().strip())
         reco.delete(0,tk.END)
         for it in items: reco.insert(tk.END,it)
         if reco.size()>0: reco.selection_clear(0,tk.END); reco.selection_set(0)
@@ -994,7 +1017,7 @@ def run_ui():
     # 사용자가 직접 표현을 넣고 빼는 줄. 넣는 즉시 phrases.txt에 저장되고 자동완성에 반영된다.
     msg_var=tk.StringVar(value="문구를 쓰고 Enter(또는 ＋표현 추가) → 바로 자동완성에 반영 · 목록 더블클릭=복사")
     def do_add():
-        msg_var.set(add_phrase(q_var.get())); q_var.set(""); refill()
+        msg_var.set(add_phrase(_q())); q_var.set(""); refill()
     def do_del():
         msg_var.set(del_phrase(current_text())); refill()
     def do_restore():
@@ -1010,7 +1033,7 @@ def run_ui():
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
     q_entry.bind("<Control-Return>", lambda e: do_paste())
 
-    refill(); q_entry.focus_set()
+    _set_ph(); refill()   # 시작 시 placeholder 표시
     start_tray(on_open=lambda: post_ui(show_window), on_quit=lambda: post_ui(quit_all),
                on_collect=toggle_collect, on_acomp=toggle_acomp)
     refresh(); overlay_tick(); debug("mainloop 진입"); root.mainloop()
