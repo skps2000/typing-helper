@@ -30,7 +30,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v20(자기창차단+민감필터+버전) boot ===")
+debug("=== v21(직관성: Enter추가+힌트) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -844,6 +844,8 @@ def run_ui():
 
     tk.Label(root,text="⌨  타이핑 도우미",font=FT,bg=TH["bg"],fg=TH["fg"]).pack(pady=(14,2))
     tk.Label(root,text="v"+APP_VERSION,font=("Malgun Gothic",8),bg=TH["bg"],fg=TH["sub"]).pack()
+    tk.Label(root,text="입력 중 커서 위 목록 → Tab 채움 · ↑↓ 이동 · Esc 닫기",
+             font=("Malgun Gothic",9),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
     status_var=tk.StringVar(); stat=tk.Label(root,textvariable=status_var,font=FB,bg=TH["bg"]); stat.pack()
     info_var=tk.StringVar(); tk.Label(root,textvariable=info_var,font=F,bg=TH["bg"],fg=TH["sub"]).pack(pady=(2,8))
 
@@ -978,19 +980,19 @@ def run_ui():
         _save_cfg()
 
     reco.bind("<Double-Button-1>", lambda e: do_copy())
-    q_entry.bind("<Return>", lambda e: do_paste())
+    q_entry.bind("<Return>", lambda e: do_add())
 
     brow=tk.Frame(panel,bg=TH["bg"]); brow.pack(fill="x",pady=(6,0))
     tk.Button(brow,text="복사",font=FB,command=do_copy,relief="flat",bg="#2563eb",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,3))
-    tk.Button(brow,text="붙여넣기",font=FB,command=do_paste,relief="flat",bg="#7c3aed",fg="white",
+    tk.Button(brow,text="붙여넣기(Ctrl+Enter)",font=FB,command=do_paste,relief="flat",bg="#7c3aed",fg="white",
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=3)
     ac_btn=tk.Button(brow,text="자동복사 OFF",font=FB,command=toggle_autocopy,relief="flat",
                      bg="#9ca3af",fg="white",cursor="hand2",height=1)
     ac_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
 
     # 사용자가 직접 표현을 넣고 빼는 줄. 넣는 즉시 phrases.txt에 저장되고 자동완성에 반영된다.
-    msg_var=tk.StringVar(value="위 상자에 문구를 쓰고 '표현 추가' → 바로 자동완성에 반영됩니다")
+    msg_var=tk.StringVar(value="문구를 쓰고 Enter(또는 ＋표현 추가) → 바로 자동완성에 반영 · 목록 더블클릭=복사")
     def do_add():
         msg_var.set(add_phrase(q_var.get())); q_var.set(""); refill()
     def do_del():
@@ -1006,7 +1008,7 @@ def run_ui():
               cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(2,0))
     tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg=TH["bg"],fg="#6b7280",
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
-    q_entry.bind("<Control-Return>", lambda e: do_add())
+    q_entry.bind("<Control-Return>", lambda e: do_paste())
 
     refill(); q_entry.focus_set()
     start_tray(on_open=lambda: post_ui(show_window), on_quit=lambda: post_ui(quit_all),
