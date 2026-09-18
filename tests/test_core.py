@@ -183,12 +183,44 @@ def test_chosung_search():
     res = th.reco_matches("ㅂㄹㅍ")
     check("ㅂㄹㅍ -> 브리핑", any(p.startswith("브리핑") for p in res), str(res[:3]))
 
+def test_password_block():
+    """비밀번호 필드로 감지되면(_in_password) 제안을 내지 않는다."""
+    setup(); th.ACOMP = True
+    th._in_password = True
+    th._cur = list("ghkrdls"); th._uia_prefix = "브리"; th._update_sug()
+    check("비번칸: 제안 억제", th.S["items"] == [], str(th.S["items"]))
+    th._in_password = False; th._cur = []; th._uia_prefix = ""  # 정리
+
+def test_trash_restore():
+    """삭제 시 휴지통 보관 + 최근 삭제 복원."""
+    import tempfile
+    old_p, old_t, old_m = th.PHRASES, th.TRASH_PATH, th._phrase_mtime
+    tmpP = os.path.join(tempfile.gettempdir(), "th_ph_unit.txt")
+    tmpT = os.path.join(tempfile.gettempdir(), "th_tr_unit.txt")
+    with open(tmpP, "w", encoding="utf-8") as f: f.write("브리핑해줘\n확인해봐\n")
+    th.PHRASES = tmpP; th.TRASH_PATH = tmpT; th._phrase_mtime = 0
+    try:
+        if os.path.exists(tmpT): os.remove(tmpT)
+        th.reload_phrases()
+        msg = th.del_phrase("확인해봐")
+        check("삭제→휴지통 보관", ("휴지통" in msg) and ("확인해봐" not in th.PHRASE_LIST), msg)
+        with open(tmpT, encoding="utf-8") as f: trash = f.read()
+        check("휴지통 파일에 존재", "확인해봐" in trash, trash.strip())
+        rmsg = th.restore_last_deleted()
+        check("복원됨", ("복원" in rmsg) and ("확인해봐" in th.PHRASE_LIST), rmsg)
+    finally:
+        th.PHRASES = old_p; th.TRASH_PATH = old_t; th._phrase_mtime = 0
+        for p in (tmpP, tmpT):
+            try: os.remove(p)
+            except Exception: pass
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
                test_backspace_clear_recovers, test_suffix_backoff,
                test_line_before_caret, test_uia_gapfill, test_usage_ranking, test_settings_roundtrip,
-               test_phrases_normalization, test_chosung_search]:
+               test_phrases_normalization, test_chosung_search,
+               test_password_block, test_trash_restore]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

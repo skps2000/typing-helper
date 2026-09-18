@@ -14,7 +14,7 @@ def debug(m):
         with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v16(정규화+초성검색) boot ===")
+debug("=== v17(비번차단+휴지통+성능) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -208,6 +208,7 @@ def add_phrase(text):
     reload_phrases()
     if _has_long_digits(t): return "추가됨 - 긴 숫자가 있습니다. 민감정보가 아닌지 확인하세요"
     return "추가됨: "+t
+TRASH_PATH=os.path.join(LOG_DIR,"phrases_trash.txt")
 def del_phrase(text):
     t=(text or "").strip()
     if not t: return "삭제할 표현을 목록에서 고르세요"
@@ -215,10 +216,24 @@ def del_phrase(text):
         with open(PHRASES,encoding="utf-8") as f: lines=f.readlines()
         keep=[ln for ln in lines if ln.rstrip("\r\n")!=t]
         if len(keep)==len(lines): return "목록에 없는 표현입니다"
+        with open(TRASH_PATH,"a",encoding="utf-8") as tf: tf.write(t+"\n")   # 휴지통 보관(복원 가능)
         with open(PHRASES,"w",encoding="utf-8") as f: f.writelines(keep)
     except Exception:
         debug("표현 삭제 실패:\n"+traceback.format_exc()); return "삭제 실패 (로그 확인)"
-    reload_phrases(); return "삭제됨: "+t
+    reload_phrases(); return "삭제됨(휴지통 보관): "+t
+def restore_last_deleted():
+    # 가장 최근 삭제한 표현을 되살린다.
+    try:
+        if not os.path.exists(TRASH_PATH): return "휴지통이 비어 있습니다"
+        with open(TRASH_PATH,encoding="utf-8") as f: tl=[l.rstrip("\r\n") for l in f if l.strip()]
+        if not tl: return "휴지통이 비어 있습니다"
+        last=tl.pop()
+        with open(TRASH_PATH,"w",encoding="utf-8") as f:
+            for l in tl: f.write(l+"\n")
+        add_phrase(last)   # phrases.txt에 되살리고 reload
+        return "복원됨: "+last
+    except Exception:
+        debug("복원 실패:\n"+traceback.format_exc()); return "복원 실패 (로그 확인)"
 MAX_SUG=6
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
@@ -299,7 +314,7 @@ def _is_chosung_query(q):
 _buf=[]; _lock=threading.Lock(); _last_input=time.time()
 _ctrl=False; _paste=False; _last_clip=""; COLLECTING=True; ACOMP=True
 _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
-USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0     # UIA로 읽은 커서앞 실제 텍스트 + 최근 타이핑 시각
+USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0; _in_password=False   # UIA 커서앞 텍스트 + 최근타이핑 + 비번칸 여부
 OUR_PID=ctypes.windll.kernel32.GetCurrentProcessId()  # 우리 창엔 제안하지 않기 위한 식별
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
@@ -331,8 +346,8 @@ def on_press(key):
             _cur.clear(); _update_sug()
             return
         ch=getattr(key,"char",None)
-        # 수집 버퍼
-        if COLLECTING:
+        # 수집 버퍼 (비밀번호 필드에서는 기록하지 않는다 - 비번 유출 방지)
+        if COLLECTING and not _in_password:
             _last_input=time.time()
             with _lock:
                 if ch is not None: _buf.append(ch)
@@ -341,16 +356,15 @@ def on_press(key):
                 elif key==keyboard.Key.backspace:
                     if _buf: _buf.pop()
                 elif key==keyboard.Key.tab: _buf.append("\t")
-        # 자동완성용 현재줄 버퍼
-        if ch is not None: _cur.append(ch)
+        # 자동완성용 현재줄 버퍼 (비밀번호 필드에서는 조합/제안 모두 건너뜀)
+        if _in_password:
+            if _cur: _cur.clear()
+        elif ch is not None: _cur.append(ch)
         elif key==keyboard.Key.space: _cur.append(" ")
         elif key==keyboard.Key.backspace:
-            # 한글은 Backspace 1번에 조합 글자 1개가 지워지지만 _cur엔 영문 키가 여러 개라
-            # 하나만 pop하면 어긋난다(브리 qmfl=4타지만 화면 2글자). 지우면 버퍼를 비워
-            # 다음 입력부터 새로 매칭 -> 썼다 지웠다 반복해도 매번 정상 표시.
-            _cur.clear()
+            _cur.clear()   # 한글 1자=영문 여러타라 하나만 pop하면 어긋남 -> 통째로 비움
         elif key in (keyboard.Key.enter,keyboard.Key.esc): _cur.clear()
-        elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿이 움직인 경우만
+        elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿 이동 시
         _update_sug()
     except Exception:
         debug("on_press 예외:\n"+traceback.format_exc())
@@ -366,7 +380,7 @@ def _set_sug(items,pref,idx=0,close=False):
     S["close"]=close   # True=즉시 숨김(Esc/삽입), False=잠깐 유지 후 숨김(편집 중 깜빡임 방지)
     S["ver"]+=1
 def _update_sug():
-    if not ACOMP: _set_sug([],""); return
+    if _in_password or not ACOMP: _set_sug([],""); return
     try: _cur_s="".join(_cur)      # 훅/COM 두 스레드가 부르므로 동시변경 대비 스냅샷
     except Exception: _cur_s=""
     items,pref=top_matches(_cur_s)                     # 키 입력 조합(즉각)
@@ -444,7 +458,7 @@ _caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으
 def caret_tracker():
     # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
     # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
-    global _caret_xy,_uia_prefix
+    global _caret_xy,_uia_prefix,_in_password
     try:
         import comtypes, comtypes.client as _cc
         try: comtypes.CoInitialize()
@@ -464,9 +478,18 @@ def caret_tracker():
             fg=u32.GetForegroundWindow(); u32.GetWindowThreadProcessId(fg, ctypes.byref(fg_pid))
             if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안하지 않는다
                 if _uia_prefix: _uia_prefix=""
-                time.sleep(0.12); continue
-            active=bool(S["items"]); xy=None; newp=""
+                _in_password=False; time.sleep(0.12); continue
             el=uia.GetFocusedElement()
+            try: pw=bool(el.CurrentIsPassword) if el is not None else False   # 비밀번호 필드?
+            except Exception: pw=False
+            _in_password=pw
+            if pw:                                     # 비번칸: 아무것도 읽지/제안하지 않음
+                if _uia_prefix: _uia_prefix=""
+                time.sleep(0.1); continue
+            active=bool(S["items"]); recent=(time.time()-_last_key)<3.0
+            if not (active or recent):                 # 유휴: 무거운 읽기 생략(CPU 절약)
+                time.sleep(0.15); continue
+            xy=None; newp=""
             if el is not None:
                 try:
                     tp=el.GetCurrentPattern(TPID)
@@ -835,11 +858,15 @@ def run_ui():
         msg_var.set(add_phrase(q_var.get())); q_var.set(""); refill()
     def do_del():
         msg_var.set(del_phrase(current_text())); refill()
+    def do_restore():
+        msg_var.set(restore_last_deleted()); refill()
     arow=tk.Frame(panel,bg="#f5f6f8"); arow.pack(fill="x",pady=(4,0))
     tk.Button(arow,text="＋ 표현 추가",font=FB,command=do_add,relief="flat",bg="#059669",fg="white",
-              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,3))
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(0,2))
     tk.Button(arow,text="선택 삭제",font=FB,command=do_del,relief="flat",bg="#b91c1c",fg="white",
-              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(3,0))
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=2)
+    tk.Button(arow,text="↩ 삭제취소",font=FB,command=do_restore,relief="flat",bg="#6b7280",fg="white",
+              cursor="hand2",height=1).pack(side="left",expand=True,fill="x",padx=(2,0))
     tk.Label(panel,textvariable=msg_var,font=("Malgun Gothic",9),bg="#f5f6f8",fg="#6b7280",
              anchor="w",justify="left",wraplength=330).pack(fill="x",pady=(4,0))
     q_entry.bind("<Control-Return>", lambda e: do_add())

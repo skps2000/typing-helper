@@ -16,3 +16,4 @@ __pycache__/
 dist/*.exe
 usage.json
 settings.json
+phrases_trash.txt
