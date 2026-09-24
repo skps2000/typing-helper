@@ -27,10 +27,14 @@ LOG_DIR=_resolve_log_dir()
 os.makedirs(LOG_DIR, exist_ok=True)
 def debug(m):
     try:
-        with open(os.path.join(LOG_DIR,"_debug.log"),"a",encoding="utf-8") as f:
+        p=os.path.join(LOG_DIR,"_debug.log")
+        try:
+            if os.path.getsize(p)>512*1024: open(p,"w",encoding="utf-8").close()   # 상한 넘으면 비움
+        except Exception: pass
+        with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v30(hover 강조+목록 정렬) boot ===")
+debug("=== v31(성능: 유휴 UIA 중지+폴링완화) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -642,13 +646,19 @@ def caret_tracker():
     fg_pid=wintypes.DWORD(); _logged=False
     while True:
         try:
-            if not ACOMP: time.sleep(0.2); continue
+            if not ACOMP:
+                _in_password=False; time.sleep(0.4); continue
+            # 유휴(최근 타이핑도 없고 목록도 없음)면 UIA를 '전혀' 호출하지 않는다.
+            # 이게 포커스된 앱(브라우저/오피스 등)이 느려지던 주원인이었다.
+            active=bool(S["items"]); recent=(time.time()-_last_key)<2.0
+            if not (active or recent):
+                time.sleep(0.4); continue
             fg=u32.GetForegroundWindow(); u32.GetWindowThreadProcessId(fg, ctypes.byref(fg_pid))
             if fg_pid.value==OUR_PID:                  # 우리 대시보드엔 제안/수집하지 않는다
                 _self_focused=True
                 if _uia_prefix: _uia_prefix=""
                 if S["items"]: _set_sug([],"",close=True)
-                _in_password=False; time.sleep(0.12); continue
+                _in_password=False; time.sleep(0.2); continue
             _self_focused=False
             pid=fg_pid.value
             if pid!=_fg_pid_cache:
@@ -657,17 +667,14 @@ def caret_tracker():
             if _app_blocked:                           # 이 앱은 자동완성 끔
                 if _uia_prefix: _uia_prefix=""
                 if S["items"]: _set_sug([],"",close=True)
-                time.sleep(0.12); continue
+                time.sleep(0.2); continue
             el=uia.GetFocusedElement()
             try: pw=bool(el.CurrentIsPassword) if el is not None else False   # 비밀번호 필드?
             except Exception: pw=False
             _in_password=pw
             if pw:                                     # 비번칸: 아무것도 읽지/제안하지 않음
                 if _uia_prefix: _uia_prefix=""
-                time.sleep(0.1); continue
-            active=bool(S["items"]); recent=(time.time()-_last_key)<3.0
-            if not (active or recent):                 # 유휴: 무거운 읽기 생략(CPU 절약)
-                time.sleep(0.15); continue
+                time.sleep(0.2); continue
             xy=None; newp=""
             if el is not None:
                 try:
@@ -695,7 +702,7 @@ def caret_tracker():
                 _uia_prefix=newp
                 if time.time()-_last_key<1.5: _update_sug()   # 최근 타이핑 중일 때만 능동 표시
         except Exception: pass
-        time.sleep(0.035 if S["items"] else 0.07)
+        time.sleep(0.05 if S["items"] else 0.09)
 
 # ---- 수집 writer ----
 def _emit(mf,rf,han,raw,tag=""):
