@@ -5,7 +5,7 @@ from ctypes import wintypes
 # 무조건 setdefault 하면 C:\py311 이 없는 PC에서 소스 실행 시 tk.Tk() 가 죽는다.
 for _var, _p in (("TCL_LIBRARY", r"C:\py311\tcl\tcl8.6"), ("TK_LIBRARY", r"C:\py311\tcl\tk8.6")):
     if _var not in os.environ and os.path.isdir(_p): os.environ[_var] = _p
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 def _resolve_log_dir():
     # platformdirs 로 %LOCALAPPDATA%\TypingHelper 사용(OneDrive 리디렉션 안전).
@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v31(성능: 유휴 UIA 중지+폴링완화) boot ===")
+debug("=== v32(로그 자동정리+가벼운 모드) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -331,6 +331,24 @@ def _pick_font():
             if f in fams: return f
     except Exception: pass
     return "Malgun Gothic"
+LIGHT_MODE=False   # 가벼운 모드: 커서 앞 텍스트 UIA 읽기를 생략(부담↓, 키 입력 매칭만)
+def _clean_old_logs(days=30, root=None, today=None):
+    # typing_/raw_ 로그 중 파일명 날짜가 오래된 것 삭제. days<=0이면 아무것도 안 함.
+    import re
+    if not days or days<=0: return 0
+    root=root or LOG_DIR; today=today or date.today()
+    cutoff=today-timedelta(days=days); n=0
+    try:
+        for fn in os.listdir(root):
+            m=re.match(r"(?:typing|raw)_(\d{4}-\d{2}-\d{2})\.txt$", fn)
+            if not m: continue
+            try: d=date.fromisoformat(m.group(1))
+            except Exception: continue
+            if d<cutoff:
+                try: os.remove(os.path.join(root,fn)); n+=1
+                except Exception: pass
+    except Exception: pass
+    return n
 def _match_from_boundary(prefix, n):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
@@ -686,11 +704,12 @@ def caret_tracker():
                             if active:                 # 위치는 목록이 떠 있을 때만 필요
                                 v=list(r0.GetBoundingRectangles())
                                 if len(v)>=4: xy=(int(v[0])+2, int(v[1]+v[3])+2)
-                            try:                       # 커서 앞 현재 줄 텍스트
-                                rng=r0.Clone(); rng.MoveEndpointByUnit(EP_START,U_LINE,-1)
-                                newp=_line_before_caret(rng.GetText(120))
-                                if newp and not _logged: debug("UIA 텍스트 보정 사용 시작"); _logged=True
-                            except Exception: pass
+                            if not LIGHT_MODE:         # 가벼운 모드: 텍스트 읽기 생략(부담↓)
+                                try:                       # 커서 앞 현재 줄 텍스트
+                                    rng=r0.Clone(); rng.MoveEndpointByUnit(EP_START,U_LINE,-1)
+                                    newp=_line_before_caret(rng.GetText(120))
+                                    if newp and not _logged: debug("UIA 텍스트 보정 사용 시작"); _logged=True
+                                except Exception: pass
                 except Exception: pass
                 if xy is None and active:
                     try:
@@ -919,7 +938,7 @@ def single_instance():
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
 
 def run_ui():
-    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT,UIFONT
+    global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT,UIFONT,LIGHT_MODE
     single_instance()
     ensure_files(); load_phrases(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
@@ -929,6 +948,9 @@ def run_ui():
     except Exception: MAX_SUG=6
     try: OV_FONT=max(9,min(20,int(_cfg.get("ov_font",11) or 11)))   # 제안 글자 크기 복원
     except Exception: OV_FONT=11
+    LIGHT_MODE=bool(_cfg.get("light_mode",False))                   # 가벼운 모드 복원
+    try: _clean_old_logs(int(_cfg.get("log_keep_days",30) or 0))    # 시작 시 오래된 로그 정리
+    except Exception: pass
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
@@ -1115,6 +1137,27 @@ def run_ui():
               bg="#4b5563",fg="white",cursor="hand2").pack(side="right")
     tk.Button(r_io,text="⬆ 내보내기",font=F,command=lambda:_io_msg(export_phrases),relief="flat",
               bg="#4b5563",fg="white",cursor="hand2").pack(side="right",padx=(0,4))
+    # 가벼운 모드 + 오래된 로그 정리
+    r_perf=tk.Frame(root,bg=TH["bg"]); r_perf.pack(fill="x",padx=20,pady=(0,4))
+    lm_btn=tk.Button(r_perf,font=F,relief="flat",fg="white",cursor="hand2")
+    def _refresh_lm():
+        on=LIGHT_MODE
+        lm_btn.config(text=("🪶 가벼운 모드: 켜짐" if on else "🪶 가벼운 모드: 꺼짐"),
+                      bg=("#0d9488" if on else "#6b7280"), activebackground=("#0d9488" if on else "#6b7280"))
+    def _toggle_lm():
+        global LIGHT_MODE
+        LIGHT_MODE=not LIGHT_MODE
+        try: d=load_settings(); d["light_mode"]=LIGHT_MODE; save_settings(d)
+        except Exception: pass
+        _refresh_lm()
+    lm_btn.config(command=_toggle_lm); _refresh_lm(); lm_btn.pack(side="left",expand=True,fill="x",padx=(0,3))
+    def _do_clean():
+        try:
+            n=_clean_old_logs(int(load_settings().get("log_keep_days",30) or 30))
+            from tkinter import messagebox; messagebox.showinfo("로그 정리", f"오래된 로그 {n}개를 정리했습니다.", parent=root)
+        except Exception: debug("로그 정리 실패:\n"+traceback.format_exc())
+    tk.Button(r_perf,text="🧹 오래된 로그 정리",font=F,command=_do_clean,relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(3,0))
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,

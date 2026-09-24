@@ -393,6 +393,26 @@ def test_sorted_for_display():
           str(th._sorted_for_display(items, "가나다")))
     th.PINNED = set()
 
+def test_clean_old_logs():
+    """오래된 typing_/raw_ 로그만 파일명 날짜 기준으로 삭제, 그 외 보존."""
+    import tempfile, shutil, datetime as _dt
+    d = tempfile.mkdtemp(prefix="th_logs_")
+    for name in ["typing_2020-01-01.txt", "raw_2020-01-01.txt",
+                 "typing_2026-09-25.txt", "raw_2026-09-20.txt",
+                 "phrases.txt", "typing_bad.txt"]:
+        open(os.path.join(d, name), "w").close()
+    today = _dt.date(2026, 9, 25)
+    try:
+        n = th._clean_old_logs(days=30, root=d, today=today)
+        left = set(os.listdir(d))
+        check("오래된 로그 2개 삭제", n == 2, str(n))
+        check("2020 로그 삭제됨", "typing_2020-01-01.txt" not in left and "raw_2020-01-01.txt" not in left, str(left))
+        check("최근 로그 유지", "typing_2026-09-25.txt" in left and "raw_2026-09-20.txt" in left, str(left))
+        check("비대상 파일 유지", "phrases.txt" in left and "typing_bad.txt" in left, str(left))
+        check("days=0 비활성", th._clean_old_logs(days=0, root=d, today=today) == 0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -404,7 +424,8 @@ def main():
                test_app_block, test_hotkey_toggle, test_proc_name,
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
-               test_maxsug_runtime, test_import_export, test_sorted_for_display]:
+               test_maxsug_runtime, test_import_export, test_sorted_for_display,
+               test_clean_old_logs]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")
