@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v34(고급설정 접이식) boot ===")
+debug("=== v35(문장경계 수집) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -742,13 +742,26 @@ def _emit(mf,rf,han,raw,tag=""):
     ts=f"[{datetime.now():%H:%M:%S}]"; t=f" [{tag}]" if tag else ""
     mf.write(f"{ts}{t} {han}\n"); rf.write(f"{ts}{t} {raw}\n"); mf.flush(); rf.flush()
     _today_count+=1
-def flush(mf,rf):
+import re as _re
+_SENT=_re.compile(r"[^\n.!?。…]*[\n.!?。…]+")   # 경계로 끝나는 한 덩어리(연속 부호는 함께)
+def _split_sentences(raw, final=False):
+    # 완결 문장 리스트와 남은 조각(remainder)을 돌려준다. final=True면 남은 조각도 완결로 취급.
+    parts=_SENT.findall(raw)
+    consumed=sum(len(p) for p in parts); remainder=raw[consumed:]
+    out=[]
+    for p in parts:
+        t=p.strip().strip("\n").strip()   # 줄바꿈 경계는 제거(문장부호는 유지)
+        if t: out.append(t)
+    if final and remainder.strip():
+        out.append(remainder.strip()); remainder=""
+    return out, ("" if final else remainder.lstrip())
+def flush(mf,rf, final=False):
     global _buf
     with _lock:
         if not _buf: return
-        raw="".join(_buf); _buf=[]
-    for line in raw.split("\n"):
-        if not line.strip(): continue
+        segs, remainder = _split_sentences("".join(_buf), final)
+        _buf=[remainder] if remainder else []
+    for line in segs:
         _emit(mf,rf,compose(line),line)
 def writer():
     global _paste,_last_clip,_today_count,_clip_seq
@@ -760,7 +773,7 @@ def writer():
         try:      # 루프 본문을 감싸 일시 오류(파일 잠김/클립보드 오류 등)에도 수집이 멈추지 않게
             time.sleep(0.4); load_phrases()
             if date.today()!=cur:
-                flush(mf,rf); mf.close(); rf.close(); cur=date.today()
+                flush(mf,rf,final=True); mf.close(); rf.close(); cur=date.today()
                 mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
                 _today_count=0
             if COLLECTING and pyperclip:
@@ -772,15 +785,17 @@ def writer():
                     if clip and clip!=_last_clip:
                         _last_clip=clip
                         if len(clip)<=2000 and not _has_long_digits(clip):   # 민감/초장문 제외
-                            flush(mf,rf); one=clip.replace("\n"," ⏎ ")
+                            flush(mf,rf,final=True); one=clip.replace("\n"," ⏎ ")
                             _emit(mf,rf,one,one,"복사됨")
             if _paste:
                 _paste=False; cp=(_last_clip or "")
                 if cp and len(cp)<=2000 and not _has_long_digits(cp):
-                    flush(mf,rf); one=cp.replace("\n"," ⏎ ")
+                    flush(mf,rf,final=True); one=cp.replace("\n"," ⏎ ")
                     _emit(mf,rf,one,one,"붙여넣기")
-            with _lock: n=len(_buf)
-            if n and (time.time()-_last_input>=FLUSH_IDLE or n>=FLUSH_MAX): flush(mf,rf)
+            with _lock: bt="".join(_buf)
+            if bt:
+                if any(c in bt for c in "\n.!?。…"): flush(mf,rf,final=False)   # 완결 문장 즉시 저장
+                if time.time()-_last_input>=FLUSH_IDLE or len(bt)>=FLUSH_MAX: flush(mf,rf,final=True)
         except Exception:
             debug("writer 루프 예외(계속):\n"+traceback.format_exc()); time.sleep(0.5)
 

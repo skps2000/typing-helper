@@ -425,6 +425,18 @@ def test_dir_size():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+def test_split_sentences():
+    """수집 문장 경계 분리: 완결 문장 + 남은 조각."""
+    segs, rem = th._split_sentences("안녕하세요. 반갑습니다! 오늘은")
+    check("완결 문장 분리", segs == ["안녕하세요.", "반갑습니다!"], str(segs))
+    check("남은 조각 유지", rem == "오늘은", repr(rem))
+    segs2, rem2 = th._split_sentences("안녕하세요. 반갑습니다! 오늘은", final=True)
+    check("final: 남은 것도 완결", segs2 == ["안녕하세요.", "반갑습니다!", "오늘은"] and rem2 == "", str(segs2))
+    segs3, rem3 = th._split_sentences("가나\n다라")
+    check("줄바꿈 경계", segs3 == ["가나"] and rem3 == "다라", str((segs3, rem3)))
+    segs4, rem4 = th._split_sentences("그냥 텍스트")
+    check("경계 없으면 보류", segs4 == [] and rem4 == "그냥 텍스트", str((segs4, rem4)))
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -437,7 +449,7 @@ def main():
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
-               test_clean_old_logs, test_dir_size]:
+               test_clean_old_logs, test_dir_size, test_split_sentences]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

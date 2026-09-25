@@ -1,0 +1,6 @@
+# 줄바꿈 정규화: 저장소는 LF로 통일(윈도우 체크아웃 CRLF 경고 방지)
+* text=auto eol=lf
+*.exe binary
+*.png binary
+*.ico binary
+*.jpg binary
