@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v32(로그 자동정리+가벼운 모드) boot ===")
+debug("=== v33(데이터 용량표시+보관일수) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -332,6 +332,17 @@ def _pick_font():
     except Exception: pass
     return "Malgun Gothic"
 LIGHT_MODE=False   # 가벼운 모드: 커서 앞 텍스트 UIA 읽기를 생략(부담↓, 키 입력 매칭만)
+def _dir_size(path):
+    # 폴더 내 파일 총 크기(바이트). 데이터 용량 표시용.
+    t=0
+    try:
+        for fn in os.listdir(path):
+            fp=os.path.join(path,fn)
+            try:
+                if os.path.isfile(fp): t+=os.path.getsize(fp)
+            except Exception: pass
+    except Exception: pass
+    return t
 def _clean_old_logs(days=30, root=None, today=None):
     # typing_/raw_ 로그 중 파일명 날짜가 오래된 것 삭제. days<=0이면 아무것도 안 함.
     import re
@@ -1017,7 +1028,7 @@ def run_ui():
             a="자동완성 ON" if ACOMP else "자동완성 OFF"
             status_var.set(f"{s}   |   {a}"); stat.config(fg="#059669" if COLLECTING else "#dc2626")
         # 예전엔 여기서 오늘자 로그 전체를 1.2초마다 다시 읽었다(파일이 클수록 UI가 느려짐).
-        info_var.set(f"오늘 {_today_count}줄 · 표현 {len(PHRASE_LIST)}개" + (f" (★{len(PINNED)})" if PINNED else ""))
+        info_var.set(f"오늘 {_today_count}줄 · 표현 {len(PHRASE_LIST)}개" + (f" (★{len(PINNED)})" if PINNED else "") + f" · 데이터 {_dir_size(LOG_DIR)//1024}KB")
         try:
             _fa=_last_fg_app or "(없음)"; _st="꺼짐" if _last_fg_app in BLOCKED_APPS else "켜짐"
             app_var.set(f"직전 앱: {_fa} · 자동완성 {_st}\n끈 앱: {', '.join(sorted(BLOCKED_APPS)) or '없음'}")
@@ -1151,13 +1162,24 @@ def run_ui():
         except Exception: pass
         _refresh_lm()
     lm_btn.config(command=_toggle_lm); _refresh_lm(); lm_btn.pack(side="left",expand=True,fill="x",padx=(0,3))
+    _kd=tk.IntVar(value=int(_cfg.get("log_keep_days",30) or 0))
+    def _set_keep(*_):
+        try: v=int(_kd.get())
+        except Exception: return
+        v=max(0,min(365,v))
+        try: d=load_settings(); d["log_keep_days"]=v; save_settings(d)
+        except Exception: pass
     def _do_clean():
         try:
-            n=_clean_old_logs(int(load_settings().get("log_keep_days",30) or 30))
+            days=int(_kd.get() or 0) or 30           # 0(무제한)이면 수동은 30일 기준
+            n=_clean_old_logs(days)
             from tkinter import messagebox; messagebox.showinfo("로그 정리", f"오래된 로그 {n}개를 정리했습니다.", parent=root)
         except Exception: debug("로그 정리 실패:\n"+traceback.format_exc())
-    tk.Button(r_perf,text="🧹 오래된 로그 정리",font=F,command=_do_clean,relief="flat",
-              bg="#4b5563",fg="white",cursor="hand2").pack(side="left",expand=True,fill="x",padx=(3,0))
+    tk.Button(r_perf,text="🧹 정리",font=F,command=_do_clean,relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(side="right",padx=(3,0))
+    tk.Label(r_perf,text="일 보관",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="right",padx=(2,0))
+    tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,
+               font=F,justify="center").pack(side="right",padx=(3,0))
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,

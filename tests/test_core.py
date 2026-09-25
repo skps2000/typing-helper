@@ -413,6 +413,18 @@ def test_clean_old_logs():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+def test_dir_size():
+    """_dir_size: 파일 크기 합(하위 폴더 제외)."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp(prefix="th_sz_")
+    try:
+        with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as f: f.write("x" * 100)
+        with open(os.path.join(d, "b.txt"), "w", encoding="utf-8") as f: f.write("y" * 50)
+        os.mkdir(os.path.join(d, "sub"))
+        check("_dir_size 합계", th._dir_size(d) == 150, str(th._dir_size(d)))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -425,7 +437,7 @@ def main():
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
-               test_clean_old_logs]:
+               test_clean_old_logs, test_dir_size]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")
