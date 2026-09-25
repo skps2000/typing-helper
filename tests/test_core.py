@@ -439,6 +439,32 @@ def test_split_sentences():
     segs4, rem4 = th._split_sentences("그냥 텍스트")
     check("경계 없으면 보류", segs4 == [] and rem4 == "그냥 텍스트", str((segs4, rem4)))
 
+def test_extract_candidates():
+    """수집 로그에서 표현 후보 추출: 잡음/민감/중복/기존 제외, 좋은 문장만."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp(prefix="th_ex_")
+    with open(os.path.join(d, "typing_2026-09-25.txt"), "w", encoding="utf-8") as f:
+        f.write("[08:00:01] 오늘 회의는 3시입니다.\n")
+        f.write("[08:00:02] 오늘 회의는 3시입니다.\n")   # 중복 -> 빈도 집계
+        f.write("[08:00:03] 확인해봐\n")                 # 이미 목록에 있음
+        f.write("[08:00:04] 호빵맨1!\n")                 # 비번류/짧음
+        f.write("[08:00:05] ㅐㅜ디ㅑㅜㄷ\n")             # 조합 깨짐
+        f.write("[08:00:06] 카드 1234 5678 9012\n")      # 긴 숫자
+        f.write("[08:00:07] [복사됨] 이메일 본문입니다\n")  # 클립보드
+        f.write("[08:00:08] test@x.com 으로 보냄\n")     # 이메일
+    old = list(th.PHRASE_LIST); th.PHRASE_LIST = ["확인해봐"]
+    try:
+        c = th.extract_candidates(root=d)
+        check("좋은 문장 추출", "오늘 회의는 3시입니다." in c, str(c))
+        check("기존 표현 제외", "확인해봐" not in c, str(c))
+        check("비번류 제외", not any("호빵맨" in x for x in c), str(c))
+        check("조합깨짐 제외", not any("ㅐㅜ" in x for x in c), str(c))
+        check("긴 숫자 제외", not any("1234" in x for x in c), str(c))
+        check("이메일/클립보드 제외", not any(("@" in x or "복사됨" in x) for x in c), str(c))
+    finally:
+        th.PHRASE_LIST = old
+        shutil.rmtree(d, ignore_errors=True)
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -451,7 +477,7 @@ def main():
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
-               test_clean_old_logs, test_dir_size, test_split_sentences]:
+               test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

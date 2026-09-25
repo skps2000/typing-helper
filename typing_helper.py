@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v35(문장경계 수집) boot ===")
+debug("=== v36(수집 표현 자동추출) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -343,6 +343,37 @@ def _dir_size(path):
             except Exception: pass
     except Exception: pass
     return t
+def extract_candidates(root=None, limit=200, min_len=6, max_len=42):
+    # 수집 로그(typing_*)에서 자동완성용 표현 후보를 뽑아 정제한다.
+    # 민감정보/조합깨짐/짧거나 너무 긴 것/이미 있는 표현을 제외하고 빈도순 정렬.
+    import re, glob
+    from collections import Counter
+    root=root or LOG_DIR
+    JAMO=re.compile(r"[\u3130-\u318F]"); HANGUL=re.compile(r"[가-힣]")
+    def bad(t):
+        tl=t.lower()
+        if "@" in t or "http" in tl or "www." in tl: return True
+        if re.search(r"\d{4,}", t.replace(" ","").replace("-","")): return True
+        if any(k in tl for k in ("password","비번","비밀번호","otp","인증","카드","계좌","주민")): return True
+        if re.search(r"\d", t) and re.search(r"[!@#$%^&*]", t): return True   # 비번류
+        if JAMO.search(t): return True                                        # 한/영 깨짐
+        han=len(HANGUL.findall(t))
+        if han < max(3, len(t)*0.4): return True                             # 한글 비율 낮음
+        return False
+    cnt=Counter()
+    for fp in glob.glob(os.path.join(root,"typing_*.txt")):
+        try:
+            for ln in open(fp,encoding="utf-8"):
+                m=re.match(r"^\[\d\d:\d\d:\d\d\]\s?(.*)$", ln.rstrip("\r\n"))
+                if not m: continue
+                t=m.group(1).strip()
+                if not t or t.startswith("[복사됨]") or t.startswith("[붙여넣기]"): continue
+                if not (min_len<=len(t)<=max_len): continue
+                if bad(t): continue
+                cnt[t]+=1
+        except Exception: pass
+    have=set(PHRASE_LIST)
+    return [t for t,_ in sorted(cnt.items(), key=lambda kv:(-kv[1], len(kv[0]))) if t not in have][:limit]
 def _clean_old_logs(days=30, root=None, today=None):
     # typing_/raw_ 로그 중 파일명 날짜가 오래된 것 삭제. days<=0이면 아무것도 안 함.
     import re
@@ -1212,6 +1243,20 @@ def run_ui():
     tk.Label(r_perf,text="일 보관",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="right",padx=(2,0))
     tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,
                font=F,justify="center").pack(side="right",padx=(3,0))
+    def _do_extract():
+        try:
+            cands=extract_candidates()
+            p=os.path.join(LOG_DIR,"추출후보.txt")
+            with open(p,"w",encoding="utf-8") as f:
+                f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
+                f.write("# 원하는 줄만 남기고 저장한 뒤, 위의 '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
+                f.write("\n".join(cands)+"\n")
+            _open(p)
+            from tkinter import messagebox
+            messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
+        except Exception: debug("추출 실패:\n"+traceback.format_exc())
+    tk.Button(adv,text="🔎 수집 데이터에서 표현 추출",font=F,command=_do_extract,relief="flat",
+              bg="#4b5563",fg="white",cursor="hand2").pack(fill="x",padx=20,pady=(0,4))
     _refresh_adv()   # 초기 접힘/펼침 상태 적용
 
     # ---- 추천 목록 패널 ----
