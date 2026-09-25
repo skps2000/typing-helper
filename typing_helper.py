@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v33(데이터 용량표시+보관일수) boot ===")
+debug("=== v34(고급설정 접이식) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -1046,8 +1046,8 @@ def run_ui():
         b=tk.Button(parent,text=txt,font=FB,command=cmd,bg=bg,fg=fg,relief="flat",
                     activebackground=bg,cursor="hand2",height=1)
         b.pack(side="left",expand=True,fill="x",padx=side_pad); return b
-    def mkrow(pady=3):
-        fr=tk.Frame(root,bg=TH["bg"]); fr.pack(fill="x",padx=20,pady=pady); return fr
+    def mkrow(parent=None,pady=3):
+        fr=tk.Frame(parent or root,bg=TH["bg"]); fr.pack(fill="x",padx=20,pady=pady); return fr
     # 상태 토글 한 줄
     r_tog=mkrow()
     b_collect=mkbtn(r_tog,"수집", toggle_collect, bg="#374151", side_pad=(0,3))
@@ -1062,13 +1062,30 @@ def run_ui():
                            activebackground=("#2563eb" if ACOMP else "#6b7280"))
         except Exception: pass
     _refresh_toggles()
+    # ---- 고급 설정(접이식): 기본은 접힘 ----
+    _adv_open=bool(_cfg.get("adv_open",False))
+    adv_btn=tk.Button(root,relief="flat",bd=0,anchor="w",cursor="hand2",
+                      font=F,bg=TH["bg"],fg=TH["sub"],activebackground=TH["bg"])
+    adv_btn.pack(fill="x",padx=22,pady=(4,0))
+    adv=tk.Frame(root,bg=TH["bg"])
+    def _refresh_adv():
+        adv_btn.config(text=("⚙  고급 설정  ▲ (접기)" if _adv_open else "⚙  고급 설정  ▼ (펼치기)"))
+        if _adv_open: adv.pack(fill="x", after=adv_btn)
+        else: adv.pack_forget()
+    def _toggle_adv():
+        nonlocal _adv_open
+        _adv_open=not _adv_open
+        try: d=load_settings(); d["adv_open"]=_adv_open; save_settings(d)
+        except Exception: pass
+        _refresh_adv()
+    adv_btn.config(command=_toggle_adv)
     # 열기 한 줄
-    r_open=mkrow()
+    r_open=mkrow(adv)
     mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), side_pad=(0,2))
     mkbtn(r_open,"📁 폴더", lambda:_open(LOG_DIR), side_pad=(2,2))
     mkbtn(r_open,"📝 교정결과", lambda:_open(PHRASES), side_pad=(2,0))
     # 설정 한 줄: 자동시작 + 테마
-    r_set=mkrow()
+    r_set=mkrow(adv)
     as_btn=tk.Button(r_set,font=FB,relief="flat",fg="white",cursor="hand2",height=1)
     def _refresh_as():
         on=autostart_enabled()
@@ -1092,7 +1109,7 @@ def run_ui():
     th_btn.config(command=_cycle_theme, text="🎨 테마: "+_thmap.get(_cfg.get("theme","auto"),"자동"))
     th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
     # 앱별 자동완성 on/off
-    appf=tk.LabelFrame(root,text=" 앱별 자동완성 ",font=F,bg=TH["bg"],fg=TH["sub"],padx=8,pady=4)
+    appf=tk.LabelFrame(adv,text=" 앱별 자동완성 ",font=F,bg=TH["bg"],fg=TH["sub"],padx=8,pady=4)
     appf.pack(fill="x",padx=16,pady=(2,2))
     app_var=tk.StringVar(value="직전 앱을 확인 중...")
     tk.Label(appf,textvariable=app_var,font=(UIFONT,9),bg=TH["bg"],fg=TH["sub"],
@@ -1108,9 +1125,9 @@ def run_ui():
         except Exception: pass
     tk.Button(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,relief="flat",
               bg="#4b5563",fg="white",cursor="hand2").pack(fill="x",pady=(4,0))
-    tk.Label(root,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
+    tk.Label(adv,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,8),bg=TH["bg"],fg=TH["sub"]).pack(pady=(0,2))
     # 제안 개수 + 내보내기/가져오기
-    r_io=tk.Frame(root,bg=TH["bg"]); r_io.pack(fill="x",padx=20,pady=(0,4))
+    r_io=tk.Frame(adv,bg=TH["bg"]); r_io.pack(fill="x",padx=20,pady=(0,4))
     tk.Label(r_io,text="제안 개수",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="left")
     _ms=tk.IntVar(value=MAX_SUG)
     def _set_maxsug(*_):
@@ -1149,7 +1166,7 @@ def run_ui():
     tk.Button(r_io,text="⬆ 내보내기",font=F,command=lambda:_io_msg(export_phrases),relief="flat",
               bg="#4b5563",fg="white",cursor="hand2").pack(side="right",padx=(0,4))
     # 가벼운 모드 + 오래된 로그 정리
-    r_perf=tk.Frame(root,bg=TH["bg"]); r_perf.pack(fill="x",padx=20,pady=(0,4))
+    r_perf=tk.Frame(adv,bg=TH["bg"]); r_perf.pack(fill="x",padx=20,pady=(0,4))
     lm_btn=tk.Button(r_perf,font=F,relief="flat",fg="white",cursor="hand2")
     def _refresh_lm():
         on=LIGHT_MODE
@@ -1180,6 +1197,7 @@ def run_ui():
     tk.Label(r_perf,text="일 보관",font=F,bg=TH["bg"],fg=TH["sub"]).pack(side="right",padx=(2,0))
     tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,
                font=F,justify="center").pack(side="right",padx=(3,0))
+    _refresh_adv()   # 초기 접힘/펼침 상태 적용
 
     # ---- 추천 목록 패널 ----
     panel=tk.LabelFrame(root,text=" 추천 목록 (검색 / 직접 추가) ",font=F,
