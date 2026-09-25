@@ -17,4 +17,6 @@ jobs:
       - name: Install runtime deps
         run: python -m pip install pynput pyperclip pystray Pillow comtypes rapidfuzz platformdirs sv-ttk
       - name: Run core tests
+        env:
+          PYTHONUTF8: '1'
         run: python tests/test_core.py

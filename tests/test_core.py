@@ -6,6 +6,8 @@ UI/후킹 없이 순수 함수(한글 조합, 후보 매칭)만 검증한다.
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import typing_helper as th
+try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # 한글 출력이 CI 등에서 깨지지 않게
+except Exception: pass
 
 # 테스트용 표현 목록(파일과 독립)
 SAMPLE = [
