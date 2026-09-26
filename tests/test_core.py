@@ -639,6 +639,33 @@ def test_dismiss_and_nav():
         (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
          th._cur, th.S, th._uia_prefix) = old
 
+def test_do_expand_placeholder():
+    # 자동확장 문구에 {..}가 있으면 삽입 후 그 자리로 이동+선택, 트리거(스페이스/엔터)는 넣지 않음.
+    import tempfile
+    calls = {"left": 0, "shift": 0, "typed": [], "enter": 0}
+    class FakeKBD:
+        def type(self, t): calls["typed"].append(t)
+        def press(self, k):
+            n = getattr(k, "name", "")
+            if "left" in n: calls["left"] += 1
+            if "shift" in n: calls["shift"] += 1
+            if "enter" in n: calls["enter"] += 1
+        def release(self, k): pass
+    oldKBD, oldPC, oldUP, oldcur = th.KBD, th.pyperclip, th.USAGE_PATH, list(th._cur)
+    th.KBD = FakeKBD(); th.pyperclip = None
+    th.USAGE_PATH = os.path.join(tempfile.gettempdir(), "th_usage_exp2.json")
+    try:
+        th._injecting = False; th._cur = list("rt")
+        th.do_expand(2, "안녕 {이름}님", False)
+        check("자리표시자: 왼쪽 이동", calls["left"] > 0, str(calls))
+        check("자리표시자: Shift 선택", calls["shift"] > 0, str(calls))
+        check("자리표시자: 문구만 입력(트리거 스페이스 없음)", calls["typed"] == ["안녕 {이름}님"], str(calls["typed"]))
+        check("자리표시자: 엔터 미입력", calls["enter"] == 0)
+    finally:
+        th.KBD = oldKBD; th.pyperclip = oldPC; th.USAGE_PATH = oldUP; th._cur = oldcur
+        try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_exp2.json"))
+        except Exception: pass
+
 def test_sug_worker_coalesce():
     # 워커 분리: request_sug()는 이벤트만 세우고, 계산은 워커 루프 몸통(_update_sug)에서.
     setup()
@@ -675,7 +702,7 @@ def main():
                test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates,
                test_snippets_parse, test_recent_pool, test_recent_boost_match,
                test_alias_autoexpand, test_do_expand_sequence, test_dismiss_and_nav,
-               test_sug_worker_coalesce]:
+               test_do_expand_placeholder, test_sug_worker_coalesce]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

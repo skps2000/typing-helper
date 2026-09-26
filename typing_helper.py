@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v44(매칭 미세최적화: 경계캐시+풀 1회+최근상한) boot ===")
+debug("=== v45(완성도: 자동확장 자리표시자 + 기본 상용구 예제) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.42.0"
+APP_VERSION="0.43.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -88,6 +88,37 @@ GUIDE_TEXT = """타이핑 도우미 - 교정 프롬프트 가이드
 감사합니다 좋은 하루 보내세요
 ===== (여기까지 복사) =====
 """
+SNIPPETS_TEXT = """# ── 상용구 / 단축키 ──────────────────────────────────────────
+# 한 줄에 하나.  형식:  단축키=문구   또는   문구(단축키 없이)
+#
+# ▶ 자동확장 : 타이핑 중 '단축키'를 치고 스페이스/엔터 → 그 자리에서 문구로 바뀜
+#             (예: ㄱㅅ + 스페이스 → "감사합니다. 좋은 하루 보내세요.")
+# ▶ 백틱검색 : 어디서나 백틱( ` )을 누르면 검색창 → 단축키/문구 일부로 찾아 Enter 삽입
+#
+# ※ 단축키는 'ㄱㅅ, ㅅㄱ'처럼 자음 2개로(모음 넣으면 한 글자로 합쳐져 오작동).
+#   ㄱㅅ=키보드 r,t / ㅅㄱ=t,r. 영문 단축키(sig 등)는 영문 모드에서만 정확.
+#   문구에 {..}를 넣으면 삽입 후 그 자리가 선택돼 바로 덮어쓸 수 있어요.
+# ─────────────────────────────────────────────────────────────
+
+# [인사 · 감사]
+ㄱㅅ=감사합니다. 좋은 하루 보내세요.
+ㅎㅇ=안녕하세요, 반갑습니다.
+ㅅㄱ=수고하셨습니다. 감사합니다.
+
+# [업무 회신]
+ㅇㅋ=네, 확인했습니다.
+ㅂㄷ=바로 처리해서 회신드리겠습니다.
+ㅁㅈ=말씀하신 대로 진행하겠습니다.
+ㅈㅅ=죄송합니다. 다시 확인 후 안내드리겠습니다.
+
+# [메일]
+ㅁㄹ=요청하신 자료 첨부드립니다. 확인 부탁드립니다.
+ㅇㄹ=안녕하세요, {이름}님.
+
+# [단축키 없이 문구만 - 자동완성/백틱검색 후보로도 뜸]
+확인 후 다시 연락드리겠습니다.
+오늘도 좋은 하루 보내세요.
+"""
 def ensure_files():
     if not os.path.exists(GUIDE):
         with open(GUIDE,"w",encoding="utf-8") as f: f.write(GUIDE_TEXT)
@@ -95,14 +126,7 @@ def ensure_files():
         with open(PHRASES,"w",encoding="utf-8") as f: f.write("# 타 AI 교정결과(표현 한 줄씩)를 붙여넣고 저장하세요.\n")
     if not os.path.exists(SNIPPETS):
         with open(SNIPPETS,"w",encoding="utf-8") as f:
-            f.write("# 상용구 / 단축키 - 한 줄에 하나씩.\n")
-            f.write("# 형식) 단축키=문구   또는   문구  (단축키 없이 문구만 써도 됩니다)\n")
-            f.write("# 자동확장) 타이핑 중 '단축키'를 치고 스페이스/엔터를 누르면 그 자리에서 문구로 바뀝니다.\n")
-            f.write("#          (예: ㄱㅅ + 스페이스 -> '감사합니다. 좋은 하루 보내세요.')\n")
-            f.write("# 검색) 백틱( ` )을 누르면 검색창이 열려 단축키/문구 일부로 찾아 Enter 삽입.\n")
-            f.write("# 예)\n")
-            f.write("ㄱㅅ=감사합니다. 좋은 하루 보내세요.\n")
-            f.write("확인 후 다시 연락드리겠습니다.\n")
+            f.write(SNIPPETS_TEXT)
 
 # ---- 한글 조합 ----
 CHO=list("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
@@ -804,7 +828,15 @@ def do_expand(dellen, text, add_enter):
                 except Exception: pass
         else:
             KBD.type(text)
-        if add_enter:
+        i=text.find("{"); j=(text.find("}", i) if i>=0 else -1)   # 자리표시자 {..}?
+        if 0<=i<j:                           # 첫 자리표시자로 커서 이동 + 선택(트리거는 넣지 않음)
+            for _ in range(len(text)-(j+1)):
+                KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+            KBD.press(keyboard.Key.shift)
+            for _ in range(j-i+1):
+                KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+            KBD.release(keyboard.Key.shift)
+        elif add_enter:
             KBD.press(keyboard.Key.enter); KBD.release(keyboard.Key.enter)
         else:
             KBD.type(" ")                    # 눌렀던 스페이스 복원
