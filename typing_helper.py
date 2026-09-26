@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v41(더보기 간결화: 아이콘 제거·버튼 축소·창높이 자동맞춤) boot ===")
+debug("=== v42(UIA 최적화: 텍스트읽기 최소화 + 느린사이클 계측) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.39.0"
+APP_VERSION="0.40.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -880,6 +880,16 @@ def _proc_name(pid):
         _k32.CloseHandle(h)
     return ""
 _caret_xy=None   # UIA 추적 스레드가 채우는 최신 캐럿 좌표(없으면 caret_xy 폴백)
+_uia_stat={"last_log":0.0}
+def _uia_log(dt, parts):
+    # UIA 한 사이클이 느릴 때만(15ms↑) + 2초 스로틀로 _debug.log에 단계별 소요를 남긴다.
+    # 어느 앱에서 무엇이 느린지 실측용(부하 거의 없음: 임계 미만이면 즉시 반환).
+    if dt<0.015: return
+    now=time.time()
+    if now-_uia_stat["last_log"]<2.0: return
+    _uia_stat["last_log"]=now
+    br=" ".join("%s=%.1f"%(k,v*1000) for k,v in parts.items() if v>=0.001)
+    debug("[UIA 느림] total=%.1fms %s app=%s"%(dt*1000, br, _last_fg_app or "?"))
 def caret_tracker():
     # UI Automation으로 포커스 요소의 캐럿(텍스트 선택) 위치를 따라간다.
     # GetGUIThreadInfo가 못 잡는 Chromium/Electron 계열도 여기서 잡힌다. COM이라 별도 STA 스레드.
@@ -921,42 +931,56 @@ def caret_tracker():
                 if _uia_prefix: _uia_prefix=""
                 if S["items"]: _set_sug([],"",close=True)
                 time.sleep(0.2); continue
-            el=uia.GetFocusedElement()
+            t0=time.perf_counter(); parts={}
+            el=uia.GetFocusedElement(); parts["focus"]=time.perf_counter()-t0
             try: pw=bool(el.CurrentIsPassword) if el is not None else False   # 비밀번호 필드?
             except Exception: pw=False
             _in_password=pw
             if pw:                                     # 비번칸: 아무것도 읽지/제안하지 않음
                 if _uia_prefix: _uia_prefix=""
                 time.sleep(0.2); continue
-            xy=None; newp=""
-            if el is not None:
+            # 필요한 것만 조회한다:
+            #  - 위치(want_pos): 목록이 떠 있을 때만(오버레이 배치용)
+            #  - 텍스트(want_text): 키 버퍼가 비었/짧아 보정이 필요할 때만. 이 GetText가 가장 무거워
+            #    정상 타이핑(버퍼 정상) 중엔 건너뛴다 → 포커스 앱 렉의 주원인 제거.
+            want_pos=active
+            try: _curlen=len(_cur)
+            except Exception: _curlen=0
+            want_text=(not LIGHT_MODE) and (_curlen<MIN_PREFIX)
+            xy=None; newp=""; got_text=False
+            if el is not None and (want_pos or want_text):
                 try:
-                    tp=el.GetCurrentPattern(TPID)
+                    ts=time.perf_counter(); tp=el.GetCurrentPattern(TPID); parts["pat"]=time.perf_counter()-ts
                     if tp:
-                        sel=tp.QueryInterface(ITP).GetSelection()
+                        ts=time.perf_counter(); sel=tp.QueryInterface(ITP).GetSelection(); parts["sel"]=time.perf_counter()-ts
                         if sel and sel.Length>0:
                             r0=sel.GetElement(0)
-                            if active:                 # 위치는 목록이 떠 있을 때만 필요
+                            if want_pos:
+                                ts=time.perf_counter()
                                 v=list(r0.GetBoundingRectangles())
                                 if len(v)>=4: xy=(int(v[0])+2, int(v[1]+v[3])+2)
-                            if not LIGHT_MODE:         # 가벼운 모드: 텍스트 읽기 생략(부담↓)
-                                try:                       # 커서 앞 현재 줄 텍스트
+                                parts["pos"]=time.perf_counter()-ts
+                            if want_text:              # 커서 앞 현재 줄 텍스트(무거움 - 필요할 때만)
+                                ts=time.perf_counter()
+                                try:
                                     rng=r0.Clone(); rng.MoveEndpointByUnit(EP_START,U_LINE,-1)
-                                    newp=_line_before_caret(rng.GetText(120))
+                                    newp=_line_before_caret(rng.GetText(120)); got_text=True
                                     if newp and not _logged: debug("UIA 텍스트 보정 사용 시작"); _logged=True
                                 except Exception: pass
+                                parts["text"]=time.perf_counter()-ts
                 except Exception: pass
-                if xy is None and active:
+                if xy is None and want_pos:
                     try:
                         r=el.CurrentBoundingRectangle
                         if r.right>r.left: xy=(int(r.left)+6, int(r.bottom)+2)
                     except Exception: pass
             if xy: _caret_xy=xy
-            if newp!=_uia_prefix:                      # 실제 텍스트가 바뀌면(마우스/편집/삭제) 반영
+            if got_text and newp!=_uia_prefix:         # 실제 텍스트가 바뀌면(마우스/편집/삭제) 반영
                 _uia_prefix=newp
                 if time.time()-_last_key<1.5: _update_sug()   # 최근 타이핑 중일 때만 능동 표시
+            _uia_log(time.perf_counter()-t0, parts)
         except Exception: pass
-        time.sleep(0.05 if S["items"] else 0.09)
+        time.sleep(0.05 if S["items"] else 0.12)
 
 # ---- 수집 writer ----
 def _emit(mf,rf,han,raw,tag=""):
