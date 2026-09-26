@@ -11,7 +11,9 @@ Built first-class for **Korean (Dubeolsik) typing** — it composes Hangul from 
 [![Tests](https://github.com/skps2000/typing-helper/actions/workflows/tests.yml/badge.svg)](https://github.com/skps2000/typing-helper/actions/workflows/tests.yml)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 
-<!-- TODO: add docs/screenshot.png and a short demo GIF -->
+<p align="center">
+  <img src="docs/screenshot.png" alt="Typing Helper dashboard" width="380">
+</p>
 
 ## Why
 
