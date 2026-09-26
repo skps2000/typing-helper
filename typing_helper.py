@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v45(완성도: 자동확장 자리표시자 + 기본 상용구 예제) boot ===")
+debug("=== v46(텍스트 파일은 메모장으로 열기) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.43.0"
+APP_VERSION="0.44.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -1112,6 +1112,16 @@ def count_today_lines():
 def _open(p):
     try: os.startfile(p)
     except Exception: debug("open fail "+p+"\n"+traceback.format_exc())
+def _open_txt(p):
+    # 텍스트 파일은 '메모장'으로 연다. 일부 편집기(VSCodium 등)는 예전 빈 버퍼를 캐시해
+    # 파일이 비어 보이는 문제가 있어, 항상 디스크 내용 그대로 보이도록 메모장 고정.
+    try:
+        import subprocess
+        subprocess.Popen(["notepad.exe", p])   # 경로를 인자로 직접 전달(한글 경로/따옴표 문제 없음)
+    except Exception:
+        debug("open txt fail "+str(p)+"\n"+traceback.format_exc())
+        try: os.startfile(p)                    # 폴백: 기본 연결 프로그램
+        except Exception: pass
 
 # ---- 오버레이 ----
 OV=None; OVLIST=None; OVHINT=None; _drawn_ver=-1
@@ -1521,10 +1531,10 @@ def run_ui():
     # ── 관리(열기/추출) ──
     ctk.CTkLabel(more,text="관리",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(6,1))
     r_open=mkrow(more,pady=2)
-    mkbtn(r_open,"문구", lambda:_open(PHRASES), color="#4b5563", side_pad=(0,3), h=30, font=FS)
-    mkbtn(r_open,"상용구", lambda:_open(SNIPPETS), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_open,"문구", lambda:_open_txt(PHRASES), color="#4b5563", side_pad=(0,3), h=30, font=FS)
+    mkbtn(r_open,"상용구", lambda:_open_txt(SNIPPETS), color="#4b5563", side_pad=(3,3), h=30, font=FS)
     mkbtn(r_open,"폴더", lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3), h=30, font=FS)
-    mkbtn(r_open,"가이드", lambda:_open(GUIDE), color="#4b5563", side_pad=(3,0), h=30, font=FS)
+    mkbtn(r_open,"가이드", lambda:_open_txt(GUIDE), color="#4b5563", side_pad=(3,0), h=30, font=FS)
     def _io_msg(fn):
         try:
             r=fn()
@@ -1540,7 +1550,7 @@ def run_ui():
                 f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
                 f.write("# 원하는 줄만 남기고 저장한 뒤, '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
                 f.write("\n".join(cands)+"\n")
-            _open(p)
+            _open_txt(p)
             from tkinter import messagebox
             messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
         except Exception: debug("추출 실패:\n"+traceback.format_exc())
