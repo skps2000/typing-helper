@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v40(연속 화살표 이동 + ESC 숨김유지 수정) boot ===")
+debug("=== v41(더보기 간결화: 아이콘 제거·버튼 축소·창높이 자동맞춤) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.38.0"
+APP_VERSION="0.39.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -1389,11 +1389,11 @@ def run_ui():
         global ACOMP; ACOMP=not ACOMP
         if not ACOMP: _set_sug([],"")
         _save_cfg(); _refresh_toggles()
-    def mkbtn(parent,txt,cmd,color="#3b82f6",side_pad=(0,0)):
-        b=ctk.CTkButton(parent,text=txt,font=FB,command=cmd,fg_color=color,height=34)
+    def mkbtn(parent,txt,cmd,color="#3b82f6",side_pad=(0,0),h=34,font=None):
+        b=ctk.CTkButton(parent,text=txt,font=(font or FB),command=cmd,fg_color=color,height=h)
         b.pack(side="left",expand=True,fill="x",padx=side_pad); return b
-    def mkrow(parent=None,pady=4):
-        fr=ctk.CTkFrame(parent or root,fg_color="transparent"); fr.pack(fill="x",padx=16,pady=pady); return fr
+    def mkrow(parent=None,pady=4,padx=14):
+        fr=ctk.CTkFrame(parent or root,fg_color="transparent"); fr.pack(fill="x",padx=padx,pady=pady); return fr
     r_tog=mkrow()
     b_collect=mkbtn(r_tog,"수집", toggle_collect, side_pad=(0,4))
     b_acomp=mkbtn(r_tog,"자동완성", toggle_acomp, side_pad=(4,0))
@@ -1416,13 +1416,18 @@ def run_ui():
                            hover_color=("#e5e7eb","#222b3c"))
     more_btn.pack(fill="x",padx=16,pady=(4,2))
     more=ctk.CTkFrame(root,fg_color="transparent")
-    H_SMALL="384x300"; H_BIG="384x760"
+    H_SMALL="384x300"; H_BIG="384x660"
     def _refresh_more():
         more_btn.configure(text=("▲   접기" if _more_open else "⚙   더보기 · 설정 · 상용구   ▼"))
-        try: root.geometry(H_BIG if _more_open else H_SMALL)
-        except Exception: pass
-        if _more_open: more.pack(fill="both",expand=True,padx=2,pady=(0,2))
-        else: more.pack_forget()
+        if _more_open:
+            more.pack(fill="x",padx=2,pady=(0,2))
+            try:                                   # 내용 높이에 맞춰 창을 정확히 키운다(잘림 방지)
+                root.update_idletasks()
+                h=root.winfo_reqheight(); sh=root.winfo_screenheight()
+                root.geometry("384x%d" % max(300, min(h, sh-90)))
+            except Exception: root.geometry(H_BIG)
+        else:
+            more.pack_forget(); root.geometry(H_SMALL)
     def _toggle_more():
         nonlocal _more_open
         _more_open=not _more_open
@@ -1432,12 +1437,12 @@ def run_ui():
     more_btn.configure(command=_toggle_more)
 
     # ── 관리(열기/추출) ──
-    ctk.CTkLabel(more,text="관리",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=14,pady=(8,2))
-    r_open=mkrow(more)
-    mkbtn(r_open,"📝 문구", lambda:_open(PHRASES), color="#4b5563", side_pad=(0,3))
-    mkbtn(r_open,"⚡ 상용구", lambda:_open(SNIPPETS), color="#4b5563", side_pad=(3,3))
-    mkbtn(r_open,"📁 폴더", lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3))
-    mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), color="#4b5563", side_pad=(3,0))
+    ctk.CTkLabel(more,text="관리",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(6,1))
+    r_open=mkrow(more,pady=2)
+    mkbtn(r_open,"문구", lambda:_open(PHRASES), color="#4b5563", side_pad=(0,3), h=30, font=FS)
+    mkbtn(r_open,"상용구", lambda:_open(SNIPPETS), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_open,"폴더", lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_open,"가이드", lambda:_open(GUIDE), color="#4b5563", side_pad=(3,0), h=30, font=FS)
     def _io_msg(fn):
         try:
             r=fn()
@@ -1457,37 +1462,37 @@ def run_ui():
             from tkinter import messagebox
             messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
         except Exception: debug("추출 실패:\n"+traceback.format_exc())
-    r_io2=mkrow(more)
-    mkbtn(r_io2,"🔎 표현 추출", _do_extract, color="#4b5563", side_pad=(0,3))
-    mkbtn(r_io2,"⬇ 가져오기", lambda:_io_msg(import_phrases), color="#4b5563", side_pad=(3,3))
-    mkbtn(r_io2,"⬆ 내보내기", lambda:_io_msg(export_phrases), color="#4b5563", side_pad=(3,0))
+    r_io2=mkrow(more,pady=2)
+    mkbtn(r_io2,"추출", _do_extract, color="#4b5563", side_pad=(0,3), h=30, font=FS)
+    mkbtn(r_io2,"가져오기", lambda:_io_msg(import_phrases), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_io2,"내보내기", lambda:_io_msg(export_phrases), color="#4b5563", side_pad=(3,0), h=30, font=FS)
 
     # ── 설정 ──
-    ctk.CTkLabel(more,text="설정",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=14,pady=(10,2))
-    r_set=mkrow(more)
-    as_btn=ctk.CTkButton(r_set,font=FB,height=34)
+    ctk.CTkLabel(more,text="설정",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(8,1))
+    r_set=mkrow(more,pady=2)
+    as_btn=ctk.CTkButton(r_set,font=FS,height=30)
     def _refresh_as():
         on=autostart_enabled()
-        as_btn.configure(text=("🔌 자동시작: 켜짐" if on else "🔌 자동시작: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
+        as_btn.configure(text=("자동시작: 켜짐" if on else "자동시작: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
     def toggle_autostart():
         set_autostart(not autostart_enabled()); _refresh_as()
     as_btn.configure(command=toggle_autostart); _refresh_as(); as_btn.pack(side="left",expand=True,fill="x",padx=(0,3))
     _thmap={"auto":"자동","light":"라이트","dark":"다크"}
-    th_btn=ctk.CTkButton(r_set,font=FB,height=34,fg_color="#7c3aed",hover_color="#6a2fd0")
+    th_btn=ctk.CTkButton(r_set,font=FS,height=30,fg_color="#7c3aed",hover_color="#6a2fd0")
     def _cycle_theme():
         order=["auto","light","dark"]; d=load_settings(); cur=d.get("theme","auto")
         nxt=order[(order.index(cur)+1)%3] if cur in order else "auto"
         d["theme"]=nxt; save_settings(d)
-        th_btn.configure(text="🎨 테마: "+_thmap[nxt])
+        th_btn.configure(text="테마: "+_thmap[nxt])
         try: ctk.set_appearance_mode({"auto":"system","light":"light","dark":"dark"}[nxt])
         except Exception: pass
-    th_btn.configure(command=_cycle_theme, text="🎨 테마: "+_thmap.get(_cfg.get("theme","auto"),"자동")); th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
+    th_btn.configure(command=_cycle_theme, text="테마: "+_thmap.get(_cfg.get("theme","auto"),"자동")); th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
 
     # 앱별 자동완성
-    appf=ctk.CTkFrame(more); appf.pack(fill="x",padx=10,pady=(6,2))
-    ctk.CTkLabel(appf,text="앱별 자동완성",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=10,pady=(6,0))
+    appf=ctk.CTkFrame(more); appf.pack(fill="x",padx=14,pady=(6,2))
+    ctk.CTkLabel(appf,text="앱별 자동완성",font=(UIFONT,10,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=10,pady=(5,0))
     app_var=tk.StringVar(value="직전 앱을 확인 중...")
-    ctk.CTkLabel(appf,textvariable=app_var,font=FS,text_color=SUB,justify="left",anchor="w",wraplength=320).pack(fill="x",padx=10)
+    ctk.CTkLabel(appf,textvariable=app_var,font=FS,text_color=SUB,justify="left",anchor="w",wraplength=330).pack(fill="x",padx=10)
     def _toggle_app():
         name=_last_fg_app
         if not name:
@@ -1497,11 +1502,11 @@ def run_ui():
         try:
             d=load_settings(); d["disabled_apps"]=sorted(BLOCKED_APPS); save_settings(d)
         except Exception: pass
-    ctk.CTkButton(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,fg_color="#4b5563",height=32).pack(fill="x",padx=10,pady=(4,8))
-    ctk.CTkLabel(more,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,10),text_color=SUB).pack(pady=(2,2))
+    ctk.CTkButton(appf,text="직전 앱 자동완성 켜기 / 끄기",font=FS,command=_toggle_app,fg_color="#4b5563",height=30).pack(fill="x",padx=10,pady=(4,7))
+    ctk.CTkLabel(more,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,10),text_color=SUB).pack(pady=(1,1))
 
     # 제안 개수 + 글자 크기
-    r_io=mkrow(more)
+    r_io=mkrow(more,pady=2)
     ctk.CTkLabel(r_io,text="제안 개수",font=FS,text_color=SUB).pack(side="left")
     _ms=tk.IntVar(value=MAX_SUG)
     def _set_maxsug(*_):
@@ -1529,11 +1534,11 @@ def run_ui():
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="left",padx=(6,0))
 
     # 가벼운 모드 + 로그 보관/정리
-    r_perf=mkrow(more)
+    r_perf=mkrow(more,pady=(2,4))
     lm_btn=ctk.CTkButton(r_perf,font=FS,height=30)
     def _refresh_lm():
         on=LIGHT_MODE
-        lm_btn.configure(text=("🪶 가벼운 모드: 켜짐" if on else "🪶 가벼운 모드: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
+        lm_btn.configure(text=("가벼운 모드: 켜짐" if on else "가벼운 모드: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
     def _toggle_lm():
         global LIGHT_MODE
         LIGHT_MODE=not LIGHT_MODE
@@ -1554,7 +1559,7 @@ def run_ui():
             n=_clean_old_logs(days)
             from tkinter import messagebox; messagebox.showinfo("로그 정리", f"오래된 로그 {n}개를 정리했습니다.", parent=root)
         except Exception: debug("로그 정리 실패:\n"+traceback.format_exc())
-    ctk.CTkButton(r_perf,text="🧹 정리",font=FS,command=_do_clean,fg_color="#4b5563",width=58,height=30).pack(side="right",padx=(3,0))
+    ctk.CTkButton(r_perf,text="정리",font=FS,command=_do_clean,fg_color="#4b5563",width=48,height=30).pack(side="right",padx=(3,0))
     ctk.CTkLabel(r_perf,text="일 보관",font=FS,text_color=SUB).pack(side="right",padx=(2,0))
     tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,font=F,justify="center",
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="right",padx=(3,0))
