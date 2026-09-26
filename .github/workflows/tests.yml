@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install runtime deps
-        run: python -m pip install pynput pyperclip pystray Pillow comtypes rapidfuzz platformdirs sv-ttk
+        run: python -m pip install pynput pyperclip pystray Pillow comtypes rapidfuzz platformdirs sv-ttk customtkinter
       - name: Run core tests
         env:
           PYTHONUTF8: '1'

@@ -6,4 +6,5 @@ comtypes
 rapidfuzz
 platformdirs
 sv-ttk
+customtkinter
 pyinstaller
