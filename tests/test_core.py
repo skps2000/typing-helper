@@ -465,6 +465,80 @@ def test_extract_candidates():
         th.PHRASE_LIST = old
         shutil.rmtree(d, ignore_errors=True)
 
+def test_snippets_parse():
+    import tempfile, shutil, time as _t
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "상용구.txt")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("# 주석은 무시\n\n")
+        f.write("ㄱㅅ=감사합니다. 좋은 하루 보내세요.\n")
+        f.write("addr=서울시 강남구 테헤란로\n")
+        f.write("단축키 없는 상용구 문장\n")
+        f.write("addr=서울시 강남구 테헤란로\n")   # 중복 문구 -> 제거
+    old_p, old_m = th.SNIPPETS, th._snip_mtime
+    old_list, old_texts = list(th.SNIPPET_LIST), list(th.SNIPPET_TEXTS)
+    try:
+        th.SNIPPETS = p; th._snip_mtime = 0
+        th.load_snippets()
+        check("상용구 3개 로드(중복 제거)", len(th.SNIPPET_LIST) == 3, str(th.SNIPPET_TEXTS))
+        check("주석 제외", all(not t.startswith("#") for t in th.SNIPPET_TEXTS))
+        check("단축키 없는 줄도 포함", "단축키 없는 상용구 문장" in th.SNIPPET_TEXTS)
+        # 단축키(alias)로 문구 찾기: 원문/조합 둘 다
+        check("alias ㄱㅅ -> 감사", th._snippet_alias_hits("ㄱㅅ") == ["감사합니다. 좋은 하루 보내세요."], str(th._snippet_alias_hits("ㄱㅅ")))
+        check("alias addr 접두 -> 주소", "서울시 강남구 테헤란로" in th._snippet_alias_hits("ad"), str(th._snippet_alias_hits("ad")))
+        check("alias 영문조합 rkt(->갓) 무매칭 안전", isinstance(th._snippet_alias_hits("rkt"), list))
+    finally:
+        th.SNIPPETS, th._snip_mtime = old_p, old_m
+        th.SNIPPET_LIST[:] = old_list; th.SNIPPET_TEXTS[:] = old_texts
+        shutil.rmtree(d, ignore_errors=True)
+
+def test_recent_pool():
+    import time as _t
+    old_recent = dict(th.RECENT); old_texts = list(th.SNIPPET_TEXTS); old_pl = list(th.PHRASE_LIST)
+    try:
+        th.RECENT.clear(); th.SNIPPET_TEXTS[:] = []
+        now = _t.time()
+        th.note_recent("오늘 회의는 3시입니다.", now-10)
+        th.note_recent("점심 뭐 먹지 오늘", now-5)
+        th.note_recent("오늘 회의는 3시입니다.", now-1)   # 같은 문구 재입력 -> 횟수++
+        th.note_recent("만료된 문장입니다 예전거", now-th.RECENT_TTL-50)  # 1시간 초과
+        act = th.recent_active(now)
+        check("만료 문장 제거", "만료된 문장입니다 예전거" not in act, str(act))
+        check("자주 쓴 문구가 먼저", act[0] == "오늘 회의는 3시입니다.", str(act))
+        check("_recent_rank 반영", th._recent_rank("오늘 회의는 3시입니다.") == 2, str(th._recent_rank("오늘 회의는 3시입니다.")))
+        # 짧거나 민감/자모깨짐은 적립 안 됨
+        th.note_recent("짧음", now); th.note_recent("카드 1234 5678 9012 3456", now); th.note_recent("ㅁㄴㅇㄹ ㅋㅋ", now)
+        act2 = th.recent_active(now)
+        check("짧은 문구 제외", "짧음" not in act2)
+        check("긴 숫자 제외", not any("1234" in x for x in act2), str(act2))
+        check("자모깨짐 제외", "ㅁㄴㅇㄹ ㅋㅋ" not in act2)
+        # _match_pool: 최근 + 상용구 + 표현(중복 제거, 최근 우선)
+        th.PHRASE_LIST[:] = ["오늘 회의는 3시입니다.", "저장된 표현 하나"]  # 첫 항목은 최근과 중복
+        th.SNIPPET_TEXTS[:] = ["상용구 문장 하나"]
+        pool = th._match_pool()
+        check("_match_pool 최근 우선", pool[0] == "오늘 회의는 3시입니다.", str(pool[:3]))
+        check("_match_pool 중복 제거", pool.count("오늘 회의는 3시입니다.") == 1, str(pool))
+        check("_match_pool 상용구 포함", "상용구 문장 하나" in pool)
+        check("_match_pool 표현 포함", "저장된 표현 하나" in pool)
+    finally:
+        th.RECENT.clear(); th.RECENT.update(old_recent)
+        th.SNIPPET_TEXTS[:] = old_texts; th.PHRASE_LIST[:] = old_pl
+
+def test_recent_boost_match():
+    import time as _t
+    old_recent = dict(th.RECENT); old_pl = list(th.PHRASE_LIST); old_sn = list(th.SNIPPET_TEXTS)
+    try:
+        th.SNIPPET_TEXTS[:] = []; th.RECENT.clear()
+        th.PHRASE_LIST[:] = ["확인 후 다시 연락드리겠습니다", "확인해봐"]
+        base = th._match_from_boundary("확인", 5)
+        check("기본 매칭에 둘 다", set(base) == {"확인 후 다시 연락드리겠습니다", "확인해봐"}, str(base))
+        th.note_recent("확인해봐", _t.time()); th.note_recent("확인해봐", _t.time())  # 최근 핫
+        boosted = th._match_from_boundary("확인", 5)
+        check("최근 문구가 맨 위로", boosted[0] == "확인해봐", str(boosted))
+    finally:
+        th.RECENT.clear(); th.RECENT.update(old_recent)
+        th.PHRASE_LIST[:] = old_pl; th.SNIPPET_TEXTS[:] = old_sn
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -477,7 +551,8 @@ def main():
                test_sensitive_digits, test_self_focus_block, test_version,
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
-               test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates]:
+               test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates,
+               test_snippets_parse, test_recent_pool, test_recent_boost_match]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v37(CustomTkinter 리디자인) boot ===")
+debug("=== v38(간소화 UI + 백틱 상용구 검색 + 최근1시간 후보) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,11 +57,13 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.35.0"
+APP_VERSION="0.36.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
+SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
 FLUSH_IDLE, FLUSH_MAX = 1.5, 200
 MIN_PREFIX=2
+RECENT_TTL=3600   # 최근 입력을 자동완성 후보로 유지하는 시간(초) = 1시간
 def mainpath(): return os.path.join(LOG_DIR, f"typing_{date.today().isoformat()}.txt")
 def rawpath():  return os.path.join(LOG_DIR, f"raw_{date.today().isoformat()}.txt")
 
@@ -91,6 +93,15 @@ def ensure_files():
         with open(GUIDE,"w",encoding="utf-8") as f: f.write(GUIDE_TEXT)
     if not os.path.exists(PHRASES):
         with open(PHRASES,"w",encoding="utf-8") as f: f.write("# 타 AI 교정결과(표현 한 줄씩)를 붙여넣고 저장하세요.\n")
+    if not os.path.exists(SNIPPETS):
+        with open(SNIPPETS,"w",encoding="utf-8") as f:
+            f.write("# 상용구 / 단축키 - 한 줄에 하나씩.\n")
+            f.write("# 형식) 단축키=문구   또는   문구  (단축키 없이 문구만 써도 됩니다)\n")
+            f.write("# 사용) 타이핑 중 백틱( ` )을 누르면 검색창이 열립니다.\n")
+            f.write("#       검색창에 단축키나 문구 일부를 치고 Enter 로 현재 앱에 삽입.\n")
+            f.write("# 예)\n")
+            f.write("ㄱㅅ=감사합니다. 좋은 하루 보내세요.\n")
+            f.write("확인 후 다시 연락드리겠습니다.\n")
 
 # ---- 한글 조합 ----
 CHO=list("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
@@ -239,6 +250,100 @@ def load_phrases():
 def reload_phrases():
     global _phrase_mtime
     _phrase_mtime=0; load_phrases()      # mtime 무시하고 강제로 다시 읽는다
+
+# ---- 상용구 / 단축키 ----
+SNIPPET_LIST=[]      # [(단축키, 문구)] - 단축키는 비어 있을 수 있다
+SNIPPET_TEXTS=[]     # 문구만
+_snip_mtime=0
+def load_snippets():
+    global SNIPPET_LIST,SNIPPET_TEXTS,_snip_mtime
+    try:
+        mt=os.path.getmtime(SNIPPETS)
+    except Exception: return
+    if mt==_snip_mtime: return
+    _snip_mtime=mt
+    out=[]; seen=set()
+    try:
+        with open(SNIPPETS,encoding="utf-8") as f:
+            for ln in f:
+                s=ln.rstrip("\r\n")
+                if not s.strip() or s.lstrip().startswith("#"): continue
+                if "=" in s:
+                    a,t=s.split("=",1); a=a.strip(); t=t.strip()
+                else:
+                    a,t="",s.strip()
+                if not t or t in seen: continue
+                seen.add(t); out.append((a,t))
+    except Exception: return
+    SNIPPET_LIST=out; SNIPPET_TEXTS=[t for _,t in out]
+    debug(f"상용구 {len(out)}개 로드")
+def _snippet_alias_hits(q):
+    # 검색어 q(원문/조합)가 단축키의 앞부분과 맞으면 그 문구를 돌려준다(단축키 검색).
+    if not SNIPPET_LIST or not q: return []
+    keys=[q.lower()]
+    try:
+        h=compose(q).strip().lower()
+        if h and h!=keys[0]: keys.append(h)
+    except Exception: pass
+    out=[]
+    for a,t in SNIPPET_LIST:
+        al=(a or "").lower()
+        if al and any(al.startswith(k) for k in keys): out.append(t)
+    return out
+
+# ---- 최근 입력(최근 RECENT_TTL초) 실시간 후보 ----
+RECENT={}                      # 문구 -> [횟수, 마지막시각]
+_recent_lock=threading.Lock()
+def _all_jamo(t):
+    return t!="" and all((0x3130<=ord(c)<=0x318F) or c.isspace() for c in t)
+def _recent_ok(t):
+    t=(t or "").strip()
+    if not (4<=len(t)<=80): return False    # 자동완성에 쓸만한 길이만
+    if _has_long_digits(t): return False    # 카드/계좌/전화 등 제외
+    low=t.lower()
+    if "@" in t or "http" in low or "password" in low: return False
+    if _all_jamo(t): return False           # 한/영 깨짐(자모만) 제외
+    return True
+def note_recent(text, now=None):
+    # 방금 완결된 입력을 최근 후보로 적립(빈도++). writer 스레드에서 호출.
+    t=(text or "").strip()
+    if not _recent_ok(t): return
+    now=now or time.time()
+    with _recent_lock:
+        v=RECENT.get(t)
+        if v: v[0]+=1; v[1]=now
+        else: RECENT[t]=[1,now]
+def recent_active(now=None):
+    # 만료(1시간 초과) 제거 후, 자주/최근 순으로 정렬된 문구 목록.
+    now=now or time.time(); cut=now-RECENT_TTL
+    with _recent_lock:
+        for k in [k for k,v in RECENT.items() if v[1]<cut]: RECENT.pop(k,None)
+        return sorted(RECENT.keys(), key=lambda k:(-RECENT[k][0], -RECENT[k][1]))
+def _recent_rank(t):
+    v=RECENT.get(t); return v[0] if v else 0
+def _match_pool():
+    # 매칭/검색 후보 풀: 최근입력(핫) + 상용구 + 저장표현(중복 제거, 이 순서로 우선).
+    r=recent_active()
+    seen=set(r); base=list(r)
+    for t in SNIPPET_TEXTS:
+        if t not in seen: seen.add(t); base.append(t)
+    if not base: return PHRASE_LIST
+    return base+[p for p in PHRASE_LIST if p not in seen]
+def seed_recent():
+    # 시작 시 오늘 로그에서 최근 1시간 입력을 복원(재시작해도 이어지게).
+    import re
+    try:
+        now=time.time(); td=date.today()
+        with open(mainpath(),encoding="utf-8") as f:
+            for ln in f:
+                m=re.match(r"^\[(\d\d):(\d\d):(\d\d)\](?:\s*\[[^\]]*\])?\s?(.*)$", ln.rstrip("\r\n"))
+                if not m: continue
+                txt=m.group(4).strip()
+                if not txt: continue
+                try: ts=datetime(td.year,td.month,td.day,int(m.group(1)),int(m.group(2)),int(m.group(3))).timestamp()
+                except Exception: continue
+                if 0<=now-ts<=RECENT_TTL: note_recent(txt, ts)
+    except Exception: pass
 def _has_long_digits(t,n=10):
     # 카드/계좌/전화는 보통 공백·하이픈으로 끊겨 있으므로 구분자는 숫자열을 끊지 않는다.
     # 예) "1234 5678 9012 3456"(16자리) 감지. 날짜(8자리)는 n=10으로 대부분 제외.
@@ -397,16 +502,17 @@ def _match_from_boundary(prefix, n):
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
     # "켜고 너한테 말하는 거야..." -> 후보 "너한테 말하는 거야..."
     L=len(prefix); pl=prefix.lower(); seen=set(); ranked=[]
-    for p in PHRASE_LIST:
+    for p in _match_pool():          # 최근입력(핫) + 상용구 + 저장표현
         positions=[0]+[i+1 for i,c in enumerate(p) if c==" "]
         for pos in positions:
             tail=p[pos:]
             if len(tail)>L and (tail.startswith(prefix) or tail.lower().startswith(pl)):
                 if tail not in seen:
                     seen.add(tail)
-                    ranked.append((1 if _is_pinned(tail) else 0, _usage_of(tail), 0 if pos==0 else 1, len(tail), tail))  # 고정>자주쓴것>시작>짧은것
+                    # 고정 > 최근핫 > 자주쓴것 > 시작 > 짧은것
+                    ranked.append((1 if _is_pinned(tail) else 0, _recent_rank(tail), _usage_of(tail), 0 if pos==0 else 1, len(tail), tail))
                 break   # 한 표현에서 가장 이른 경계만 사용
-    ranked.sort(key=lambda x:(-x[0],-x[1],x[2],x[3]))
+    ranked.sort(key=lambda x:(-x[0],-x[1],-x[2],x[3],x[4]))
     return [t for *_,t in ranked][:n]
 def _suffix_candidates(s):
     # "그래서 확인 후" -> ["그래서 확인 후", "확인 후", "후"] (전체 먼저, 뒤 단어로 백오프)
@@ -422,7 +528,7 @@ def _suffix_candidates(s):
     return out
 def _matches_for(text, n=MAX_SUG, min_prefix=1):
     # 접두사(text)에 접미 백오프 + 단어경계 매칭. (후보목록, 매칭접두사) 반환.
-    if not text or not PHRASE_LIST: return [], ""
+    if not text: return [], ""
     for prefix in _suffix_candidates(text):
         if len(prefix)<min_prefix: continue
         hits=_match_from_boundary(prefix, n)
@@ -436,7 +542,7 @@ def _line_before_caret(text, cap=80):
 def top_matches(cur_latin, n=None):
     # 커서 위 목록용 - 키 입력을 한글로 조합(우선)하거나 영문 자판 그대로 매칭.
     if n is None: n=MAX_SUG      # 설정에서 바뀐 개수를 호출 시점에 반영
-    if len(cur_latin)<MIN_PREFIX or not PHRASE_LIST: return [], ""
+    if len(cur_latin)<MIN_PREFIX: return [], ""
     for base in (compose(cur_latin), cur_latin):
         items,pref=_matches_for(base, n)
         if items: return items, pref
@@ -445,22 +551,27 @@ def reco_matches(q, k=40):
     """대시보드 추천창용 - 사용자가 상자에 입력한 질의(q)로 표현 목록을 걸러 정렬한다.
     한글 IME로 직접 친 질의와 영문 자판(dkssud)으로 친 질의를 모두 처리한다.
     앞부분 일치를 먼저, 그 다음 부분 문자열 포함 순으로 돌려준다."""
-    if not q: return PHRASE_LIST[:k]
+    pool=_match_pool()                     # 최근입력 + 상용구 + 저장표현
+    if not q: return pool[:k]
     ql=q.lower()
     qh=compose(q) if q.isascii() else q   # 영문 자판이면 한글로 조합해 본다
     cho_q=q if _is_chosung_query(q) else (qh if _is_chosung_query(qh) else "")  # 초성 검색
+    alias=_snippet_alias_hits(q)          # 단축키로 상용구 찾기
     pre=[]; sub=[]; cho=[]
-    for p in PHRASE_LIST:
+    for p in pool:
         pl=p.lower()
         if p.startswith(q) or (qh and p.startswith(qh)) or pl.startswith(ql): pre.append(p)
         elif q in p or (qh and qh in p) or ql in pl: sub.append(p)
         elif cho_q and _chosung(p).startswith(cho_q): cho.append(p)   # ㅂㄹㅍ -> 브리핑
-    results=pre+sub+cho
+    results=[]; seen=set()
+    for grp in (alias, pre, sub, cho):
+        for p in grp:
+            if p not in seen: seen.add(p); results.append(p)
     if len(results)<k:                                   # 오타 허용(RapidFuzz)로 보강
         try:
             from rapidfuzz import process, fuzz
-            have=set(results); pool=[p for p in PHRASE_LIST if p not in have]
-            for cand,score,_ in process.extract(qh or q, pool, scorer=fuzz.WRatio,
+            rest=[p for p in pool if p not in seen]
+            for cand,score,_ in process.extract(qh or q, rest, scorer=fuzz.WRatio,
                                                  limit=k-len(results), score_cutoff=70):
                 results.append(cand)
         except Exception: pass
@@ -497,6 +608,7 @@ S={"items":[],"idx":0,"pref":"","rem":"","ver":0,"close":False}
 KBD=Controller(); LISTENER=None; ROOT=None
 VK_C,VK_V,VK_X,VK_TAB,VK_ESC=67,86,88,9,27
 VK_UP,VK_DOWN=38,40
+VK_BQ=0xC0   # 백틱( ` ) = VK_OEM_3 -> 상용구/문구 검색 팝업 트리거
 # 캐럿을 움직이지 않는 키들 - 자동완성 버퍼(_cur)를 지우면 안 된다.
 # Shift가 빠지면 '있습니다', '예쁘다' 처럼 쌍자음/ㅒㅖ가 든 단어에서 접두사가 통째로 날아간다.
 _KEEP_CUR=frozenset({
@@ -524,6 +636,8 @@ def on_press(key):
             _cur.clear(); _update_sug()
             return
         ch=getattr(key,"char",None)
+        if ch=="`":                 # 백틱은 상용구 검색 트리거 - 수집/버퍼에 넣지 않는다
+            _cur.clear(); _update_sug(); return
         # 수집 버퍼 (비밀번호 필드/우리 대시보드에서는 기록하지 않는다)
         if COLLECTING and not _in_password and not _self_focused:
             _last_input=time.time()
@@ -628,15 +742,25 @@ def win_filter(msg, data):
     #      Tab이 앱으로 그대로 새고, 삽입도 일어나지 않는다(기존 버그).
     # 저수준 훅 콜백이라 여기서는 Tk를 절대 호출하지 않는다(훅 타임아웃 방지).
     try:
-        if msg not in (256,260) or not ACOMP or LISTENER is None or not S["items"]: return
+        if msg not in (256,260) or LISTENER is None: return
         vk=getattr(data,"vkCode",0)
+        if vk==VK_BQ:                      # 백틱: 상용구/문구 검색 팝업
+            if not (ACOMP and not _in_password and not _self_focused): return
+            act="pick"
+        elif not ACOMP or not S["items"]: return
+        elif vk==VK_TAB: act="tab"
+        elif vk==VK_UP: act="up"
+        elif vk==VK_DOWN: act="down"
+        elif vk==VK_ESC: act="esc"
+        else: return
     except Exception:
         debug("filter err:\n"+traceback.format_exc()); return
-    if vk==VK_TAB: threading.Thread(target=do_insert,daemon=True).start()
-    elif vk==VK_UP: move_sel(-1)
-    elif vk==VK_DOWN: move_sel(1)
-    elif vk==VK_ESC: _set_sug([],"",close=True)
-    else: return
+    # 억제(suppress_event)는 예외를 던지므로 try 밖에서 호출해야 전파된다.
+    if act=="pick": post_ui(open_picker)
+    elif act=="tab": threading.Thread(target=do_insert,daemon=True).start()
+    elif act=="up": move_sel(-1)
+    elif act=="down": move_sel(1)
+    elif act=="esc": _set_sug([],"",close=True)
     LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
 
 # ---- 캐럿 위치 ----
@@ -774,6 +898,7 @@ def _emit(mf,rf,han,raw,tag=""):
     ts=f"[{datetime.now():%H:%M:%S}]"; t=f" [{tag}]" if tag else ""
     mf.write(f"{ts}{t} {han}\n"); rf.write(f"{ts}{t} {raw}\n"); mf.flush(); rf.flush()
     _today_count+=1
+    if not tag: note_recent(han)   # 방금 친 문장을 최근 1시간 자동완성 후보로 즉시 적립
 import re as _re
 _SENT=_re.compile(r"[^\n.!?。…]*[\n.!?。…]+")   # 경계로 끝나는 한 덩어리(연속 부호는 함께)
 def _split_sentences(raw, final=False):
@@ -803,7 +928,7 @@ def writer():
         debug("writer 시작 실패:\n"+traceback.format_exc()); return
     while True:
         try:      # 루프 본문을 감싸 일시 오류(파일 잠김/클립보드 오류 등)에도 수집이 멈추지 않게
-            time.sleep(0.4); load_phrases()
+            time.sleep(0.4); load_phrases(); load_snippets()
             if date.today()!=cur:
                 flush(mf,rf,final=True); mf.close(); rf.close(); cur=date.today()
                 mf=open(mainpath(),"a",encoding="utf-8"); rf=open(rawpath(),"a",encoding="utf-8")
@@ -951,6 +1076,124 @@ def overlay_tick():
     except Exception: debug("overlay 예외:\n"+traceback.format_exc())
     if ROOT: ROOT.after(25,overlay_tick)
 
+# ---- 상용구/문구 검색 팝업(백틱 트리거) ----
+PICK=None; PK_ENTRY=None; PK_LIST=None; PK_VAR=None; _pick_target=0
+def build_picker(root):
+    global PICK,PK_ENTRY,PK_LIST,PK_VAR
+    dark=(ctk.get_appearance_mode()=="Dark")
+    bg="#0f172a" if dark else "#ffffff"; fg="#e5e7eb" if dark else "#111827"
+    ebg="#1b2130" if dark else "#f1f3f6"; bd="#2563eb"; sub="#94a3b8" if dark else "#6b7280"
+    PICK=tk.Toplevel(root); PICK.withdraw(); PICK.overrideredirect(True); PICK.attributes("-topmost",True)
+    PICK.configure(bg=bd)
+    wrap=tk.Frame(PICK,bg=bg); wrap.pack(fill="both",expand=True,padx=2,pady=2)
+    tk.Label(wrap,text=" 상용구·문구 검색   ↑↓ 이동 · Enter 삽입 · Esc 닫기",bg=bg,fg=sub,
+             font=(UIFONT,9),anchor="w").pack(fill="x",pady=(3,1))
+    PK_VAR=tk.StringVar()
+    PK_ENTRY=tk.Entry(wrap,textvariable=PK_VAR,font=(UIFONT,13),bg=ebg,fg=fg,insertbackground=fg,relief="flat")
+    PK_ENTRY.pack(fill="x",padx=5,pady=(0,4),ipady=6)
+    PK_LIST=tk.Listbox(wrap,font=(UIFONT,12),height=8,bg=bg,fg=fg,selectbackground="#2563eb",
+                       selectforeground="white",relief="flat",highlightthickness=0,activestyle="none")
+    PK_LIST.pack(fill="both",expand=True,padx=5,pady=(0,5))
+    def _fill(items):
+        PK_LIST.delete(0,tk.END)
+        for it in items: PK_LIST.insert(tk.END,"  "+it)
+        if PK_LIST.size(): PK_LIST.selection_clear(0,tk.END); PK_LIST.selection_set(0)
+    def _refill(*_):
+        q=PK_VAR.get().strip()
+        try: _fill(reco_matches(q,60) if q else _match_pool()[:60])
+        except Exception: debug("picker refill:\n"+traceback.format_exc())
+    PK_VAR.trace_add("write",_refill)
+    def _move(d):
+        n=PK_LIST.size()
+        if not n: return "break"
+        cur=PK_LIST.curselection(); i=(cur[0] if cur else 0)+d; i=max(0,min(n-1,i))
+        PK_LIST.selection_clear(0,tk.END); PK_LIST.selection_set(i); PK_LIST.see(i); return "break"
+    def _sel():
+        s=PK_LIST.curselection()
+        if not s and PK_LIST.size(): s=(0,)
+        if not s: return ""
+        t=PK_LIST.get(s[0]); return t[2:] if t.startswith("  ") else t
+    def _go(*_):
+        t=_sel(); hide_picker()
+        if t: _pick_insert(t)
+        return "break"
+    def _esc(*_): hide_picker(); return "break"
+    for w in (PK_ENTRY,PK_LIST):
+        w.bind("<Down>", lambda e:_move(1)); w.bind("<Up>", lambda e:_move(-1))
+        w.bind("<Return>", _go); w.bind("<Escape>", _esc)
+    PK_LIST.bind("<Double-Button-1>", _go)
+    PICK.bind("<FocusOut>", lambda e: PICK.after(120, _focus_guard))
+    PICK.withdraw()
+def _focus_guard():
+    # 팝업 밖을 누르면 닫는다(포커스가 팝업 밖으로 나갔을 때만).
+    try:
+        if PICK and PICK.winfo_viewable() and PICK.focus_displayof() is None: hide_picker()
+    except Exception: pass
+def hide_picker():
+    try:
+        if PICK: PICK.withdraw()
+    except Exception: pass
+def open_picker():
+    global _pick_target
+    if PICK is None: return
+    try: _pick_target=u32.GetForegroundWindow()
+    except Exception: _pick_target=0
+    try:
+        PK_VAR.set("")
+        PK_LIST.delete(0,tk.END)
+        for it in _match_pool()[:60]: PK_LIST.insert(tk.END,"  "+it)
+        if PK_LIST.size(): PK_LIST.selection_set(0)
+    except Exception: pass
+    xy=_caret_xy or caret_xy() or (500,400); x,y=xy
+    w,h=320,280
+    try:
+        sw=PICK.winfo_screenwidth(); sh=PICK.winfo_screenheight()
+        if x+w>sw: x=max(0,sw-w-6)
+        if y+h>sh: y=max(0,y-h-24)
+    except Exception: pass
+    try:
+        PICK.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+        PICK.deiconify(); PICK.lift()
+        PICK.after(20, lambda:(PICK.focus_force(), PK_ENTRY.focus_set(), PK_ENTRY.selection_range(0,"end")))
+    except Exception: debug("open_picker:\n"+traceback.format_exc())
+def _pick_insert(text):
+    # 선택한 문구를 직전에 쓰던 앱에 삽입(클립보드 붙여넣기, 실패 시 타이핑).
+    global _injecting,_last_clip
+    if not text: return
+    try:
+        if _pick_target: u32.SetForegroundWindow(_pick_target)
+    except Exception: pass
+    def _send():
+        global _injecting,_last_clip
+        time.sleep(0.12); _injecting=True
+        try:
+            if pyperclip:
+                try: orig=pyperclip.paste()
+                except Exception: orig=None
+                _last_clip=text
+                pyperclip.copy(text); time.sleep(0.03)
+                KBD.press(keyboard.Key.ctrl); KBD.press("v"); KBD.release("v"); KBD.release(keyboard.Key.ctrl)
+                time.sleep(0.12)
+                if orig is not None:
+                    try: pyperclip.copy(orig); _last_clip=orig
+                    except Exception: pass
+            else:
+                KBD.type(text)
+            i=text.find("{"); j=(text.find("}",i) if i>=0 else -1)   # 자리표시자 {..} 이동
+            if 0<=i<j:
+                for _ in range(len(text)-(j+1)): KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+                KBD.press(keyboard.Key.shift)
+                for _ in range(j-i+1): KBD.press(keyboard.Key.left); KBD.release(keyboard.Key.left)
+                KBD.release(keyboard.Key.shift)
+        except Exception:
+            debug("pick insert:\n"+traceback.format_exc())
+            try: KBD.type(text)
+            except Exception: pass
+        time.sleep(0.03); _injecting=False
+        try: record_use(text)
+        except Exception: pass
+    threading.Thread(target=_send,daemon=True).start()
+
 # ---- 트레이 아이콘 ----
 def _tray_image():
     img=_PILImage.new("RGB",(64,64),(37,99,235))
@@ -998,7 +1241,7 @@ def single_instance():
 def run_ui():
     global LISTENER,ROOT,_today_count,COLLECTING,ACOMP,MAX_SUG,OV_FONT,UIFONT,LIGHT_MODE
     single_instance()
-    ensure_files(); load_phrases(); load_usage(); load_pinned()
+    ensure_files(); load_phrases(); load_snippets(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
     TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
     BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
@@ -1010,6 +1253,7 @@ def run_ui():
     try: _clean_old_logs(int(_cfg.get("log_keep_days",30) or 0))    # 시작 시 오래된 로그 정리
     except Exception: pass
     _today_count=count_today_lines()   # 시작 시 한 번만 읽고, 이후엔 _emit이 센다
+    seed_recent()                      # 오늘 로그의 최근 1시간 입력을 자동완성 후보로 복원
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
     LISTENER.start(); debug("리스너 시작")
@@ -1017,42 +1261,30 @@ def run_ui():
 
     try: ctk.set_default_color_theme("blue")
     except Exception: pass
-    root=ctk.CTk(); ROOT=root; root.title(f"{APP_NAME} v{APP_VERSION}"); root.geometry("400x880"); root.minsize(392,680)
+    root=ctk.CTk(); ROOT=root; root.title(f"{APP_NAME} v{APP_VERSION}"); root.geometry("384x330"); root.minsize(360,300)
     try: ctk.set_appearance_mode({"auto":"system","light":"light","dark":"dark"}.get(_cfg.get("theme","auto"),"system"))
-    except Exception: pass
-    try:
-        _ws=_cfg.get("win_size")
-        if _ws: root.geometry(_ws)          # 기억한 창 크기 복원(WxH)
     except Exception: pass
     UIFONT=_pick_font()
     root.resizable(False,True)
-    build_overlay(root)
+    build_overlay(root); build_picker(root)
     F=(UIFONT,13); FB=(UIFONT,13,"bold"); FT=(UIFONT,18,"bold"); FS=(UIFONT,11)
     _dark=(ctk.get_appearance_mode()=="Dark")
     LB_BG="#1b2130" if _dark else "#ffffff"; LB_FG="#e6e9f0" if _dark else "#1c2430"
     SUB=("gray45","gray60")
 
-    AUTO_COPY=tk.BooleanVar(value=bool(_cfg.get("autocopy",False)))
     def _save_cfg():
-        d=load_settings(); d.update({"collecting":COLLECTING,"acomp":ACOMP,"autocopy":bool(AUTO_COPY.get())}); save_settings(d)
+        d=load_settings(); d.update({"collecting":COLLECTING,"acomp":ACOMP}); save_settings(d)
 
     # 하단 바 먼저 고정
-    bottom=ctk.CTkFrame(root,fg_color="transparent"); bottom.pack(side="bottom",fill="x",pady=(6,12),padx=16)
-    def _save_geo():
-        try:
-            wh=root.geometry().split("+")[0]
-            if "x" in wh:
-                d=load_settings(); d["win_size"]=wh; save_settings(d)
-        except Exception: pass
+    bottom=ctk.CTkFrame(root,fg_color="transparent"); bottom.pack(side="bottom",fill="x",pady=(8,12),padx=16)
     def show_window():
         try: root.deiconify(); root.after(10, lambda:(root.lift(), root.focus_force()))
         except Exception: pass
     def hide_bg():
-        _save_geo()
         if HAVE_TRAY and _TRAY is not None: root.withdraw()
         else: root.iconify()
     def quit_all():
-        debug("사용자 종료"); _save_geo()
+        debug("사용자 종료")
         try:
             if _TRAY is not None: _TRAY.stop()
         except Exception: pass
@@ -1064,11 +1296,10 @@ def run_ui():
     ctk.CTkButton(bottom,text="종료",font=F,command=quit_all,fg_color="#b3402f",hover_color="#8f3325").pack(side="left",expand=True,fill="x",padx=(4,0))
     root.protocol("WM_DELETE_WINDOW", quit_all)
 
-    ctk.CTkLabel(root,text="⌨  타이핑 도우미",font=FT).pack(pady=(14,0))
+    ctk.CTkLabel(root,text="⌨  타이핑 도우미",font=FT).pack(pady=(16,0))
     ctk.CTkLabel(root,text="v"+APP_VERSION,font=(UIFONT,10),text_color=SUB).pack()
-    ctk.CTkLabel(root,text="입력 중 커서 위 목록 → Tab 채움 · ↑↓ 이동 · Esc 닫기",font=FS,text_color=SUB).pack(pady=(2,6))
-    status_var=tk.StringVar(); stat=ctk.CTkLabel(root,textvariable=status_var,font=FB); stat.pack()
-    info_var=tk.StringVar(); ctk.CTkLabel(root,textvariable=info_var,font=FS,text_color=SUB).pack(pady=(2,8))
+    status_var=tk.StringVar(); stat=ctk.CTkLabel(root,textvariable=status_var,font=FB); stat.pack(pady=(10,0))
+    info_var=tk.StringVar(); ctk.CTkLabel(root,textvariable=info_var,font=FS,text_color=SUB).pack(pady=(2,2))
 
     def refresh():
         if LISTENER is not None and not LISTENER.is_alive():
@@ -1109,30 +1340,63 @@ def run_ui():
         except Exception: pass
     _refresh_toggles()
 
-    # ---- 고급 설정(접이식) ----
-    _adv_open=bool(_cfg.get("adv_open",False))
-    adv_btn=ctk.CTkButton(root,font=F,fg_color="transparent",text_color=SUB,anchor="w",height=30,
-                          hover_color=("#e5e7eb","#222b3c"))
-    adv_btn.pack(fill="x",padx=16,pady=(2,0))
-    adv=ctk.CTkFrame(root,fg_color="transparent")
-    def _refresh_adv():
-        adv_btn.configure(text=("⚙  고급 설정  ▲ (접기)" if _adv_open else "⚙  고급 설정  ▼ (펼치기)"))
-        if _adv_open: adv.pack(fill="x", after=adv_btn)
-        else: adv.pack_forget()
-    def _toggle_adv():
-        nonlocal _adv_open
-        _adv_open=not _adv_open
-        try: d=load_settings(); d["adv_open"]=_adv_open; save_settings(d)
+    # 안내 + 더보기 토글 (기본 화면은 토글 2개만, 나머지는 여기 안으로)
+    ctk.CTkLabel(root,text="입력 중 커서 위 목록 → Tab 채움 · 백틱( ` )으로 문구 검색",
+                 font=FS,text_color=SUB).pack(pady=(4,2))
+    _more_open=bool(_cfg.get("more_open",False))
+    more_btn=ctk.CTkButton(root,font=F,fg_color="transparent",text_color=SUB,anchor="center",height=30,
+                           hover_color=("#e5e7eb","#222b3c"))
+    more_btn.pack(fill="x",padx=16,pady=(4,2))
+    more=ctk.CTkFrame(root,fg_color="transparent")
+    H_SMALL="384x300"; H_BIG="384x760"
+    def _refresh_more():
+        more_btn.configure(text=("▲   접기" if _more_open else "⚙   더보기 · 설정 · 상용구   ▼"))
+        try: root.geometry(H_BIG if _more_open else H_SMALL)
         except Exception: pass
-        _refresh_adv()
-    adv_btn.configure(command=_toggle_adv)
+        if _more_open: more.pack(fill="both",expand=True,padx=2,pady=(0,2))
+        else: more.pack_forget()
+    def _toggle_more():
+        nonlocal _more_open
+        _more_open=not _more_open
+        try: d=load_settings(); d["more_open"]=_more_open; save_settings(d)
+        except Exception: pass
+        _refresh_more()
+    more_btn.configure(command=_toggle_more)
 
-    r_open=mkrow(adv)
-    mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), color="#4b5563", side_pad=(0,3))
+    # ── 관리(열기/추출) ──
+    ctk.CTkLabel(more,text="관리",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=14,pady=(8,2))
+    r_open=mkrow(more)
+    mkbtn(r_open,"📝 문구", lambda:_open(PHRASES), color="#4b5563", side_pad=(0,3))
+    mkbtn(r_open,"⚡ 상용구", lambda:_open(SNIPPETS), color="#4b5563", side_pad=(3,3))
     mkbtn(r_open,"📁 폴더", lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3))
-    mkbtn(r_open,"📝 교정결과", lambda:_open(PHRASES), color="#4b5563", side_pad=(3,0))
+    mkbtn(r_open,"📋 가이드", lambda:_open(GUIDE), color="#4b5563", side_pad=(3,0))
+    def _io_msg(fn):
+        try:
+            r=fn()
+            if r:
+                from tkinter import messagebox; messagebox.showinfo("표현 관리", r, parent=root)
+                reload_phrases()
+        except Exception: debug("io 실패:\n"+traceback.format_exc())
+    def _do_extract():
+        try:
+            cands=extract_candidates()
+            p=os.path.join(LOG_DIR,"추출후보.txt")
+            with open(p,"w",encoding="utf-8") as f:
+                f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
+                f.write("# 원하는 줄만 남기고 저장한 뒤, '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
+                f.write("\n".join(cands)+"\n")
+            _open(p)
+            from tkinter import messagebox
+            messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
+        except Exception: debug("추출 실패:\n"+traceback.format_exc())
+    r_io2=mkrow(more)
+    mkbtn(r_io2,"🔎 표현 추출", _do_extract, color="#4b5563", side_pad=(0,3))
+    mkbtn(r_io2,"⬇ 가져오기", lambda:_io_msg(import_phrases), color="#4b5563", side_pad=(3,3))
+    mkbtn(r_io2,"⬆ 내보내기", lambda:_io_msg(export_phrases), color="#4b5563", side_pad=(3,0))
 
-    r_set=mkrow(adv)
+    # ── 설정 ──
+    ctk.CTkLabel(more,text="설정",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=14,pady=(10,2))
+    r_set=mkrow(more)
     as_btn=ctk.CTkButton(r_set,font=FB,height=34)
     def _refresh_as():
         on=autostart_enabled()
@@ -1152,7 +1416,7 @@ def run_ui():
     th_btn.configure(command=_cycle_theme, text="🎨 테마: "+_thmap.get(_cfg.get("theme","auto"),"자동")); th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
 
     # 앱별 자동완성
-    appf=ctk.CTkFrame(adv); appf.pack(fill="x",padx=12,pady=(4,2))
+    appf=ctk.CTkFrame(more); appf.pack(fill="x",padx=10,pady=(6,2))
     ctk.CTkLabel(appf,text="앱별 자동완성",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=10,pady=(6,0))
     app_var=tk.StringVar(value="직전 앱을 확인 중...")
     ctk.CTkLabel(appf,textvariable=app_var,font=FS,text_color=SUB,justify="left",anchor="w",wraplength=320).pack(fill="x",padx=10)
@@ -1166,11 +1430,11 @@ def run_ui():
             d=load_settings(); d["disabled_apps"]=sorted(BLOCKED_APPS); save_settings(d)
         except Exception: pass
     ctk.CTkButton(appf,text="직전 앱에서 자동완성 켜기 / 끄기",font=F,command=_toggle_app,fg_color="#4b5563",height=32).pack(fill="x",padx=10,pady=(4,8))
-    ctk.CTkLabel(adv,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,10),text_color=SUB).pack(pady=(2,2))
+    ctk.CTkLabel(more,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,10),text_color=SUB).pack(pady=(2,2))
 
-    # 제안 개수 + 글자 크기 + 내보내기/가져오기
-    r_io=mkrow(adv)
-    ctk.CTkLabel(r_io,text="제안",font=FS,text_color=SUB).pack(side="left")
+    # 제안 개수 + 글자 크기
+    r_io=mkrow(more)
+    ctk.CTkLabel(r_io,text="제안 개수",font=FS,text_color=SUB).pack(side="left")
     _ms=tk.IntVar(value=MAX_SUG)
     def _set_maxsug(*_):
         global MAX_SUG
@@ -1180,8 +1444,8 @@ def run_ui():
         try: d=load_settings(); d["max_sug"]=v; save_settings(d)
         except Exception: pass
     tk.Spinbox(r_io,from_=3,to=12,width=3,textvariable=_ms,command=_set_maxsug,font=F,justify="center",
-               relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="left",padx=(6,10))
-    ctk.CTkLabel(r_io,text="글자",font=FS,text_color=SUB).pack(side="left")
+               relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="left",padx=(6,12))
+    ctk.CTkLabel(r_io,text="글자 크기",font=FS,text_color=SUB).pack(side="left")
     _fs=tk.IntVar(value=OV_FONT)
     def _set_ovfont(*_):
         global OV_FONT
@@ -1195,19 +1459,9 @@ def run_ui():
         except Exception: pass
     tk.Spinbox(r_io,from_=9,to=20,width=3,textvariable=_fs,command=_set_ovfont,font=F,justify="center",
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="left",padx=(6,0))
-    def _io_msg(fn):
-        try:
-            r=fn()
-            if r:
-                from tkinter import messagebox; messagebox.showinfo("표현 관리", r, parent=root)
-                try: refill()
-                except Exception: pass
-        except Exception: debug("io 실패:\n"+traceback.format_exc())
-    ctk.CTkButton(r_io,text="⬇ 가져오기",font=FS,command=lambda:_io_msg(import_phrases),fg_color="#4b5563",width=74,height=30).pack(side="right")
-    ctk.CTkButton(r_io,text="⬆ 내보내기",font=FS,command=lambda:_io_msg(export_phrases),fg_color="#4b5563",width=74,height=30).pack(side="right",padx=(0,4))
 
     # 가벼운 모드 + 로그 보관/정리
-    r_perf=mkrow(adv)
+    r_perf=mkrow(more)
     lm_btn=ctk.CTkButton(r_perf,font=FS,height=30)
     def _refresh_lm():
         on=LIGHT_MODE
@@ -1236,117 +1490,8 @@ def run_ui():
     ctk.CTkLabel(r_perf,text="일 보관",font=FS,text_color=SUB).pack(side="right",padx=(2,0))
     tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,font=F,justify="center",
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="right",padx=(3,0))
-    def _do_extract():
-        try:
-            cands=extract_candidates()
-            p=os.path.join(LOG_DIR,"추출후보.txt")
-            with open(p,"w",encoding="utf-8") as f:
-                f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
-                f.write("# 원하는 줄만 남기고 저장한 뒤, 위의 '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
-                f.write("\n".join(cands)+"\n")
-            _open(p)
-            from tkinter import messagebox
-            messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
-        except Exception: debug("추출 실패:\n"+traceback.format_exc())
-    ctk.CTkButton(adv,text="🔎 수집 데이터에서 표현 추출",font=F,command=_do_extract,fg_color="#4b5563",height=32).pack(fill="x",padx=12,pady=(2,6))
-    _refresh_adv()
+    _refresh_more()
 
-    # ---- 추천 목록 ----
-    panel=ctk.CTkFrame(root); panel.pack(fill="both",expand=True,padx=14,pady=(6,4))
-    ctk.CTkLabel(panel,text="추천 목록  ·  검색 / 직접 추가",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=12,pady=(8,2))
-    q_var=tk.StringVar()
-    srow=ctk.CTkFrame(panel,fg_color="transparent"); srow.pack(fill="x",padx=12,pady=(0,6))
-    q_entry=ctk.CTkEntry(srow,textvariable=q_var,font=(UIFONT,13),height=36,
-                         placeholder_text="검색어 입력 · 새 문구는 Enter로 추가")
-    q_entry.pack(side="left",fill="x",expand=True)
-    _sortmodes=["관련도","가나다","최근"]
-    _cs=_cfg.get("reco_sort","관련도")
-    if _cs not in _sortmodes: _cs="관련도"
-    _sortvar=tk.StringVar(value=_cs)
-    sort_btn=ctk.CTkButton(srow,font=FS,width=78,height=36,fg_color="#4b5563")
-    def _cycle_sort():
-        m=_sortmodes[(_sortmodes.index(_sortvar.get())+1)%3]
-        _sortvar.set(m); sort_btn.configure(text="정렬: "+m)
-        try: d=load_settings(); d["reco_sort"]=m; save_settings(d)
-        except Exception: pass
-        refill()
-    sort_btn.configure(command=_cycle_sort, text="정렬: "+_cs); sort_btn.pack(side="right",padx=(6,0))
-    def _q(): return q_var.get()
-
-    listwrap=ctk.CTkFrame(panel,fg_color="transparent"); listwrap.pack(fill="both",expand=True,padx=8,pady=(0,4))
-    sb=tk.Scrollbar(listwrap); sb.pack(side="right",fill="y")
-    reco=tk.Listbox(listwrap,font=(UIFONT,13),activestyle="none",bd=0,
-                    bg=LB_BG,fg=LB_FG,selectbackground="#3b82f6",selectforeground="white",
-                    highlightthickness=0,yscrollcommand=sb.set)
-    reco.pack(side="left",fill="both",expand=True); sb.config(command=reco.yview)
-
-    def current_text():
-        sel=reco.curselection()
-        t = reco.get(sel[0]) if sel else (reco.get(0) if reco.size()>0 else "")
-        return t[2:] if t.startswith("★ ") else t
-    def refill(*_):
-        items=_sorted_for_display(reco_matches(_q().strip()), _sortvar.get())
-        reco.delete(0,tk.END)
-        for it in items: reco.insert(tk.END, ("★ "+it) if it in PINNED else it)
-        if reco.size()>0: reco.selection_clear(0,tk.END); reco.selection_set(0)
-        if AUTO_COPY.get() and items and pyperclip:
-            try: pyperclip.copy(items[0])
-            except Exception: pass
-    q_var.trace_add("write",refill)
-
-    def do_copy():
-        t=current_text()
-        if t and pyperclip:
-            try: pyperclip.copy(t)
-            except Exception: pass
-    def do_paste():
-        global _injecting
-        t=current_text()
-        if not t: return
-        if pyperclip:
-            try: pyperclip.copy(t)
-            except Exception: pass
-        root.iconify()
-        def _send():
-            time.sleep(0.35); _injecting=True
-            try:
-                KBD.press(keyboard.Key.ctrl); KBD.press("v"); KBD.release("v"); KBD.release(keyboard.Key.ctrl)
-            except Exception: debug("paste fail:\n"+traceback.format_exc())
-            time.sleep(0.05); _injecting=False
-        threading.Thread(target=_send,daemon=True).start()
-    def toggle_autocopy():
-        AUTO_COPY.set(not AUTO_COPY.get())
-        ac_btn.configure(text=("자동복사 ON" if AUTO_COPY.get() else "자동복사 OFF"),
-                         fg_color=("#16a34a" if AUTO_COPY.get() else "#6b7280"))
-        if AUTO_COPY.get(): do_copy()
-        _save_cfg()
-    reco.bind("<Double-Button-1>", lambda e: do_copy())
-    q_entry.bind("<Return>", lambda e: do_add())
-
-    brow=ctk.CTkFrame(panel,fg_color="transparent"); brow.pack(fill="x",padx=12,pady=(4,0))
-    ctk.CTkButton(brow,text="복사",font=FB,command=do_copy,height=32).pack(side="left",expand=True,fill="x",padx=(0,3))
-    ctk.CTkButton(brow,text="붙여넣기",font=FB,command=do_paste,fg_color="#7c3aed",hover_color="#6a2fd0",height=32).pack(side="left",expand=True,fill="x",padx=3)
-    ac_btn=ctk.CTkButton(brow,text="자동복사 OFF",font=FB,command=toggle_autocopy,fg_color="#6b7280",height=32)
-    ac_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
-
-    msg_var=tk.StringVar(value="문구를 쓰고 Enter(또는 ＋추가) → 바로 반영 · 목록 더블클릭=복사")
-    def do_add():
-        msg_var.set(add_phrase(_q())); q_var.set(""); refill()
-    def do_del():
-        msg_var.set(del_phrase(current_text())); refill()
-    def do_restore():
-        msg_var.set(restore_last_deleted()); refill()
-    def do_pin():
-        msg_var.set(toggle_pin(current_text())); refill()
-    arow=ctk.CTkFrame(panel,fg_color="transparent"); arow.pack(fill="x",padx=12,pady=(6,4))
-    ctk.CTkButton(arow,text="＋ 추가",font=FB,command=do_add,fg_color="#16a34a",hover_color="#128a3e",height=32).pack(side="left",expand=True,fill="x",padx=(0,2))
-    ctk.CTkButton(arow,text="★ 고정",font=FB,command=do_pin,fg_color="#d97706",hover_color="#b96406",height=32).pack(side="left",expand=True,fill="x",padx=2)
-    ctk.CTkButton(arow,text="삭제",font=FB,command=do_del,fg_color="#b91c1c",hover_color="#991616",height=32).pack(side="left",expand=True,fill="x",padx=2)
-    ctk.CTkButton(arow,text="↩ 복원",font=FB,command=do_restore,fg_color="#6b7280",height=32).pack(side="left",expand=True,fill="x",padx=(2,0))
-    ctk.CTkLabel(panel,textvariable=msg_var,font=(UIFONT,10),text_color=SUB,justify="left",anchor="w",wraplength=330).pack(fill="x",padx=12,pady=(4,8))
-    q_entry.bind("<Control-Return>", lambda e: do_paste())
-
-    refill()
     if not _cfg.get("onboarded"):
         def _onboard():
             try:
@@ -1354,9 +1499,11 @@ def run_ui():
                 messagebox.showinfo("타이핑 도우미 시작하기",
                     "1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
                     "2) ↑/↓로 고르고 Tab으로 채웁니다 (Esc로 닫기).\n"
-                    "3) 자주 쓰는 문구는 아래 상자에 쓰고 Enter로 추가.\n"
+                    "3) 백틱( ` )을 누르면 문구·상용구 검색창이 열려요.\n"
                     "4) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
-                    "표현은 '교정결과(phrases.txt)'로 관리됩니다.", parent=root)
+                    "· 최근 1시간에 친 문장은 자동으로 후보에 올라옵니다.\n"
+                    "· 문구는 '더보기 → 📝문구', 상용구/단축키는 '더보기 → ⚡상용구' 파일로 관리합니다.",
+                    parent=root)
             except Exception: pass
             try:
                 d=load_settings(); d["onboarded"]=True; save_settings(d)
