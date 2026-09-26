@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v46(텍스트 파일은 메모장으로 열기) boot ===")
+debug("=== v47(영어 UI i18n: 자동감지 + 한/영 토글) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,13 +57,86 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.44.0"
+APP_VERSION="0.45.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
 FLUSH_IDLE, FLUSH_MAX = 1.5, 200
 MIN_PREFIX=2
 RECENT_TTL=3600   # 최근 입력을 자동완성 후보로 유지하는 시간(초) = 1시간
+
+# ---- 다국어(i18n) : 한국어 원문을 키로, 영어 대응을 매핑(없으면 원문 유지) ----
+LANG="ko"
+def _detect_lang():
+    try:
+        lid=ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        return "ko" if (lid & 0x3FF)==0x12 else "en"   # 0x12 = Korean
+    except Exception:
+        try:
+            import locale; lc=(locale.getdefaultlocale()[0] or "")
+            return "ko" if lc.lower().startswith("ko") else "en"
+        except Exception: return "ko"
+def set_lang(pref):
+    global LANG
+    LANG=_detect_lang() if (pref or "auto")=="auto" else ("en" if pref=="en" else "ko")
+    return LANG
+_EN={
+    "타이핑 도우미":"Typing Helper",
+    "⌨  타이핑 도우미":"⌨  Typing Helper",
+    "입력 중 커서 위 목록 → Tab 채움 · 백틱( ` )으로 문구 검색":"List above the caret → Tab to fill · backtick ( ` ) to search",
+    "⚠ 키보드 후킹 중단됨 - 앱을 다시 시작하세요":"⚠ Keyboard hook stopped — please restart the app",
+    "● 수집 중":"● Collecting", "■ 수집 멈춤":"■ Collection paused",
+    "자동완성 ON":"Autocomplete ON", "자동완성 OFF":"Autocomplete OFF",
+    "오늘 {n}줄 · 표현 {p}개":"Today {n} lines · {p} phrases",
+    " · 데이터 {kb}KB":" · data {kb}KB",
+    "● 수집: 켜짐":"● Collect: On", "■ 수집: 꺼짐":"■ Collect: Off",
+    "✓ 자동완성: 켜짐":"✓ Autocomplete: On", "✕ 자동완성: 꺼짐":"✕ Autocomplete: Off",
+    "▲   접기":"▲   Less", "⚙   더보기 · 설정 · 상용구   ▼":"⚙   More · settings · snippets   ▼",
+    "관리":"Manage", "설정":"Settings",
+    "문구":"Phrases", "상용구":"Snippets", "폴더":"Folder", "가이드":"Guide",
+    "추출":"Extract", "가져오기":"Import", "내보내기":"Export",
+    "자동시작: 켜짐":"Startup: On", "자동시작: 꺼짐":"Startup: Off",
+    "테마: ":"Theme: ", "자동":"Auto", "라이트":"Light", "다크":"Dark",
+    "앱별 자동완성":"Per-app autocomplete",
+    "직전 앱을 확인 중...":"Checking last app...",
+    "직전 앱: {fa} · 자동완성 {st}\n끈 앱: {apps}":"Last app: {fa} · autocomplete {st}\nDisabled: {apps}",
+    "켜짐":"on", "꺼짐":"off", "없음":"none",
+    "직전에 쓰던 다른 앱이 없습니다. 다른 창을 클릭한 뒤 다시 눌러주세요.":"No previous app. Click another window, then press this again.",
+    "직전 앱 자동완성 켜기 / 끄기":"Toggle autocomplete for last app",
+    "빠른 토글: Ctrl + Alt + Space":"Quick toggle: Ctrl + Alt + Space",
+    "제안 개수":"Suggestions", "글자 크기":"Font size",
+    "가벼운 모드: 켜짐":"Light mode: On", "가벼운 모드: 꺼짐":"Light mode: Off",
+    "일 보관":"days kept", "정리":"Clean",
+    "트레이로 숨기기":"Hide to tray", "백그라운드로 숨기기":"Minimize", "종료":"Quit",
+    "열기":"Open", "수집 켜기/끄기":"Toggle collect", "자동완성 켜기/끄기":"Toggle autocomplete",
+    "상용구·문구 검색   ↑↓ 이동 · Enter 삽입 · Esc 닫기":"Search snippets & phrases   ↑↓ move · Enter insert · Esc close",
+    "↑↓ 선택 · Tab 완성 · Esc 닫기":"↑↓ move · Tab fill · Esc close",
+    "표현 관리":"Phrases", "로그 정리":"Log cleanup",
+    "오래된 로그 {n}개를 정리했습니다.":"Cleaned up {n} old log file(s).",
+    "표현 추출":"Extract phrases",
+    "수집 데이터에서 {n}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.":
+        "Saved {n} candidates to '추출후보.txt' from your collected data.\nKeep the ones you want, then add them with 'Import'.",
+    "타이핑 도우미 시작하기":"Getting started with Typing Helper",
+    ("1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
+     "2) ↑/↓로 고르고 Tab으로 채웁니다 (Esc로 닫기).\n"
+     "3) 백틱( ` )을 누르면 문구·상용구 검색창이 열려요.\n"
+     "4) 단축키를 치고 스페이스/엔터 → 그 자리에서 상용구로 자동확장.\n"
+     "5) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
+     "· 최근 1시간에 친 문장은 자동으로 후보에 올라옵니다.\n"
+     "· 문구는 '더보기 → 📝문구', 상용구/단축키는 '더보기 → ⚡상용구' 파일로 관리합니다."):
+        ("1) Just type — a suggestion list appears above the caret.\n"
+     "2) Choose with ↑/↓ and fill with Tab (Esc to close).\n"
+     "3) Press backtick ( ` ) to open the phrase/snippet search.\n"
+     "4) Type an alias + Space/Enter to auto-expand a snippet in place.\n"
+     "5) Toggle autocomplete anytime with Ctrl+Alt+Space.\n\n"
+     "· Whatever you typed in the last hour is offered automatically.\n"
+     "· Manage phrases via More → Phrases, snippets via More → Snippets."),
+    "언어: 한국어":"Language: English",
+    "언어를 바꿨습니다. 다시 시작하면 완전히 적용됩니다.":"Language changed. Restart the app to fully apply.",
+    "언어":"Language",
+}
+def _t(s):
+    return _EN.get(s, s) if LANG=="en" else s
 def mainpath(): return os.path.join(LOG_DIR, f"typing_{date.today().isoformat()}.txt")
 def rawpath():  return os.path.join(LOG_DIR, f"raw_{date.today().isoformat()}.txt")
 
@@ -1140,7 +1213,7 @@ def build_overlay(root):
                       highlightthickness=0,exportselection=False,
                       bg="#111827",fg="#e5e7eb",selectbackground="#2563eb",selectforeground="white")
     OVLIST.pack(fill="both",padx=1,pady=(1,0))
-    OVHINT=tk.Label(OV,text="↑↓ 선택 · Tab 완성 · Esc 닫기",
+    OVHINT=tk.Label(OV,text=_t("↑↓ 선택 · Tab 완성 · Esc 닫기"),
                     font=(UIFONT,8),bg="#1f2937",fg="#9ca3af",anchor="w",padx=6)
     OVHINT.pack(fill="x",padx=1,pady=(0,1))
     OV.update_idletasks()
@@ -1245,7 +1318,7 @@ def build_picker(root):
     PICK=tk.Toplevel(root); PICK.withdraw(); PICK.overrideredirect(True); PICK.attributes("-topmost",True)
     PICK.configure(bg=bd)
     wrap=tk.Frame(PICK,bg=bg); wrap.pack(fill="both",expand=True,padx=2,pady=2)
-    tk.Label(wrap,text=" 상용구·문구 검색   ↑↓ 이동 · Enter 삽입 · Esc 닫기",bg=bg,fg=sub,
+    tk.Label(wrap,text=" "+_t("상용구·문구 검색   ↑↓ 이동 · Enter 삽입 · Esc 닫기"),bg=bg,fg=sub,
              font=(UIFONT,9),anchor="w").pack(fill="x",pady=(3,1))
     PK_VAR=tk.StringVar()
     PK_ENTRY=tk.Entry(wrap,textvariable=PK_VAR,font=(UIFONT,13),bg=ebg,fg=fg,insertbackground=fg,relief="flat")
@@ -1366,13 +1439,13 @@ def start_tray(on_open,on_quit,on_collect,on_acomp):
     if not HAVE_TRAY: debug("트레이 없음(미탑재)"); return None
     try:
         menu=pystray.Menu(
-            pystray.MenuItem("열기", lambda i,it: on_open(), default=True),
-            pystray.MenuItem("수집 켜기/끄기", lambda i,it: on_collect()),
-            pystray.MenuItem("자동완성 켜기/끄기", lambda i,it: on_acomp()),
+            pystray.MenuItem(_t("열기"), lambda i,it: on_open(), default=True),
+            pystray.MenuItem(_t("수집 켜기/끄기"), lambda i,it: on_collect()),
+            pystray.MenuItem(_t("자동완성 켜기/끄기"), lambda i,it: on_acomp()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("종료", lambda i,it: on_quit()),
+            pystray.MenuItem(_t("종료"), lambda i,it: on_quit()),
         )
-        _TRAY=pystray.Icon("TypingHelper", _tray_image(), APP_NAME, menu)
+        _TRAY=pystray.Icon("TypingHelper", _tray_image(), _t(APP_NAME), menu)
         threading.Thread(target=_TRAY.run, daemon=True).start()
         debug("트레이 시작"); return _TRAY
     except Exception:
@@ -1392,7 +1465,7 @@ def single_instance():
         _MUTEX=k.CreateMutexW(None, False, "TypingHelper_SingleInstance_Mutex")  # 핸들은 프로세스 수명 동안 유지
         if ctypes.get_last_error()==183:  # ERROR_ALREADY_EXISTS
             debug("이미 실행 중 - 종료")
-            try: ctypes.windll.user32.MessageBoxW(0,"타이핑 도우미가 이미 실행 중입니다.\n(작업표시줄 확인)","타이핑 도우미",0x40)
+            try: ctypes.windll.user32.MessageBoxW(0,"타이핑 도우미가 이미 실행 중입니다. (작업표시줄 확인)\nTyping Helper is already running. (check the taskbar)","타이핑 도우미 · Typing Helper",0x40)
             except Exception: pass
             os._exit(0)
     except Exception: debug("mutex 체크 실패(무시):\n"+traceback.format_exc())
@@ -1402,6 +1475,7 @@ def run_ui():
     single_instance()
     ensure_files(); load_phrases(); load_snippets(); load_usage(); load_pinned()
     _cfg=load_settings(); COLLECTING=_cfg.get("collecting",True); ACOMP=_cfg.get("acomp",True)
+    set_lang(_cfg.get("lang","auto"))            # UI 언어(자동감지/ko/en)
     TH=compute_theme(_cfg.get("theme","auto"))   # 대시보드 색 팔레트
     BLOCKED_APPS.clear(); BLOCKED_APPS.update(_cfg.get("disabled_apps",[]))   # 앱별 자동완성 끔 목록
     try: MAX_SUG=max(3,min(12,int(_cfg.get("max_sug",6) or 6)))   # 제안 개수 복원
@@ -1421,7 +1495,7 @@ def run_ui():
 
     try: ctk.set_default_color_theme("blue")
     except Exception: pass
-    root=ctk.CTk(); ROOT=root; root.title(f"{APP_NAME} v{APP_VERSION}"); root.geometry("384x330"); root.minsize(360,300)
+    root=ctk.CTk(); ROOT=root; root.title(f"{_t(APP_NAME)} v{APP_VERSION}"); root.geometry("384x330"); root.minsize(360,300)
     try: ctk.set_appearance_mode({"auto":"system","light":"light","dark":"dark"}.get(_cfg.get("theme","auto"),"system"))
     except Exception: pass
     UIFONT=_pick_font()
@@ -1451,26 +1525,26 @@ def run_ui():
         try: root.destroy()
         except Exception: pass
         os._exit(0)
-    ctk.CTkButton(bottom,text=("트레이로 숨기기" if HAVE_TRAY else "백그라운드로 숨기기"),font=F,command=hide_bg,
+    ctk.CTkButton(bottom,text=_t("트레이로 숨기기" if HAVE_TRAY else "백그라운드로 숨기기"),font=F,command=hide_bg,
                   fg_color="transparent",border_width=1,text_color=SUB,hover_color=("#e5e7eb","#222b3c")).pack(side="left",expand=True,fill="x",padx=(0,4))
-    ctk.CTkButton(bottom,text="종료",font=F,command=quit_all,fg_color="#b3402f",hover_color="#8f3325").pack(side="left",expand=True,fill="x",padx=(4,0))
+    ctk.CTkButton(bottom,text=_t("종료"),font=F,command=quit_all,fg_color="#b3402f",hover_color="#8f3325").pack(side="left",expand=True,fill="x",padx=(4,0))
     root.protocol("WM_DELETE_WINDOW", quit_all)
 
-    ctk.CTkLabel(root,text="⌨  타이핑 도우미",font=FT).pack(pady=(16,0))
+    ctk.CTkLabel(root,text=_t("⌨  타이핑 도우미"),font=FT).pack(pady=(16,0))
     ctk.CTkLabel(root,text="v"+APP_VERSION,font=(UIFONT,10),text_color=SUB).pack()
     status_var=tk.StringVar(); stat=ctk.CTkLabel(root,textvariable=status_var,font=FB); stat.pack(pady=(10,0))
     info_var=tk.StringVar(); ctk.CTkLabel(root,textvariable=info_var,font=FS,text_color=SUB).pack(pady=(2,2))
 
     def refresh():
         if LISTENER is not None and not LISTENER.is_alive():
-            status_var.set("⚠ 키보드 후킹 중단됨 - 앱을 다시 시작하세요"); stat.configure(text_color="#dc2626")
+            status_var.set(_t("⚠ 키보드 후킹 중단됨 - 앱을 다시 시작하세요")); stat.configure(text_color="#dc2626")
         else:
-            s="● 수집 중" if COLLECTING else "■ 수집 멈춤"; a="자동완성 ON" if ACOMP else "자동완성 OFF"
+            s=_t("● 수집 중") if COLLECTING else _t("■ 수집 멈춤"); a=_t("자동완성 ON") if ACOMP else _t("자동완성 OFF")
             status_var.set(f"{s}   |   {a}"); stat.configure(text_color=("#16a34a" if COLLECTING else "#9aa0a6"))
-        info_var.set(f"오늘 {_today_count}줄 · 표현 {len(PHRASE_LIST)}개" + (f" (★{len(PINNED)})" if PINNED else "") + f" · 데이터 {_dir_size(LOG_DIR)//1024}KB")
+        info_var.set(_t("오늘 {n}줄 · 표현 {p}개").format(n=_today_count,p=len(PHRASE_LIST)) + (f" (★{len(PINNED)})" if PINNED else "") + _t(" · 데이터 {kb}KB").format(kb=_dir_size(LOG_DIR)//1024))
         try:
-            _fa=_last_fg_app or "(없음)"; _st="꺼짐" if _last_fg_app in BLOCKED_APPS else "켜짐"
-            app_var.set(f"직전 앱: {_fa} · 자동완성 {_st}\n끈 앱: {', '.join(sorted(BLOCKED_APPS)) or '없음'}")
+            _fa=_last_fg_app or "(none)"; _st=_t("꺼짐") if _last_fg_app in BLOCKED_APPS else _t("켜짐")
+            app_var.set(_t("직전 앱: {fa} · 자동완성 {st}\n끈 앱: {apps}").format(fa=_fa,st=_st,apps=(', '.join(sorted(BLOCKED_APPS)) or _t("없음"))))
         except Exception: pass
         try: _refresh_toggles()
         except Exception: pass
@@ -1491,17 +1565,17 @@ def run_ui():
     b_acomp=mkbtn(r_tog,"자동완성", toggle_acomp, side_pad=(4,0))
     def _refresh_toggles():
         try:
-            b_collect.configure(text=("● 수집: 켜짐" if COLLECTING else "■ 수집: 꺼짐"),
+            b_collect.configure(text=_t("● 수집: 켜짐") if COLLECTING else _t("■ 수집: 꺼짐"),
                                 fg_color=("#16a34a" if COLLECTING else "#6b7280"),
                                 hover_color=("#128a3e" if COLLECTING else "#5a626e"))
-            b_acomp.configure(text=("✓ 자동완성: 켜짐" if ACOMP else "✕ 자동완성: 꺼짐"),
+            b_acomp.configure(text=_t("✓ 자동완성: 켜짐") if ACOMP else _t("✕ 자동완성: 꺼짐"),
                               fg_color=("#3b82f6" if ACOMP else "#6b7280"),
                               hover_color=("#2f6fd6" if ACOMP else "#5a626e"))
         except Exception: pass
     _refresh_toggles()
 
     # 안내 + 더보기 토글 (기본 화면은 토글 2개만, 나머지는 여기 안으로)
-    ctk.CTkLabel(root,text="입력 중 커서 위 목록 → Tab 채움 · 백틱( ` )으로 문구 검색",
+    ctk.CTkLabel(root,text=_t("입력 중 커서 위 목록 → Tab 채움 · 백틱( ` )으로 문구 검색"),
                  font=FS,text_color=SUB).pack(pady=(4,2))
     _more_open=bool(_cfg.get("more_open",False))
     more_btn=ctk.CTkButton(root,font=F,fg_color="transparent",text_color=SUB,anchor="center",height=30,
@@ -1510,7 +1584,7 @@ def run_ui():
     more=ctk.CTkFrame(root,fg_color="transparent")
     H_SMALL="384x300"; H_BIG="384x660"
     def _refresh_more():
-        more_btn.configure(text=("▲   접기" if _more_open else "⚙   더보기 · 설정 · 상용구   ▼"))
+        more_btn.configure(text=_t("▲   접기") if _more_open else _t("⚙   더보기 · 설정 · 상용구   ▼"))
         if _more_open:
             more.pack(fill="x",padx=2,pady=(0,2))
             try:                                   # 내용 높이에 맞춰 창을 정확히 키운다(잘림 방지)
@@ -1529,17 +1603,17 @@ def run_ui():
     more_btn.configure(command=_toggle_more)
 
     # ── 관리(열기/추출) ──
-    ctk.CTkLabel(more,text="관리",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(6,1))
+    ctk.CTkLabel(more,text=_t("관리"),font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(6,1))
     r_open=mkrow(more,pady=2)
-    mkbtn(r_open,"문구", lambda:_open_txt(PHRASES), color="#4b5563", side_pad=(0,3), h=30, font=FS)
-    mkbtn(r_open,"상용구", lambda:_open_txt(SNIPPETS), color="#4b5563", side_pad=(3,3), h=30, font=FS)
-    mkbtn(r_open,"폴더", lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3), h=30, font=FS)
-    mkbtn(r_open,"가이드", lambda:_open_txt(GUIDE), color="#4b5563", side_pad=(3,0), h=30, font=FS)
+    mkbtn(r_open,_t("문구"), lambda:_open_txt(PHRASES), color="#4b5563", side_pad=(0,3), h=30, font=FS)
+    mkbtn(r_open,_t("상용구"), lambda:_open_txt(SNIPPETS), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_open,_t("폴더"), lambda:_open(LOG_DIR), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_open,_t("가이드"), lambda:_open_txt(GUIDE), color="#4b5563", side_pad=(3,0), h=30, font=FS)
     def _io_msg(fn):
         try:
             r=fn()
             if r:
-                from tkinter import messagebox; messagebox.showinfo("표현 관리", r, parent=root)
+                from tkinter import messagebox; messagebox.showinfo(_t("표현 관리"), r, parent=root)
                 reload_phrases()
         except Exception: debug("io 실패:\n"+traceback.format_exc())
     def _do_extract():
@@ -1547,59 +1621,72 @@ def run_ui():
             cands=extract_candidates()
             p=os.path.join(LOG_DIR,"추출후보.txt")
             with open(p,"w",encoding="utf-8") as f:
-                f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
-                f.write("# 원하는 줄만 남기고 저장한 뒤, '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
+                if LANG=="en":
+                    f.write("# Candidate phrases extracted from your collected data.\n")
+                    f.write("# Keep only the lines you want, save, then add them with 'Import'.\n\n")
+                else:
+                    f.write("# 수집 데이터에서 뽑은 표현 후보입니다.\n")
+                    f.write("# 원하는 줄만 남기고 저장한 뒤, '가져오기'로 이 파일을 선택하면 추가됩니다.\n\n")
                 f.write("\n".join(cands)+"\n")
             _open_txt(p)
             from tkinter import messagebox
-            messagebox.showinfo("표현 추출", f"수집 데이터에서 {len(cands)}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.", parent=root)
+            messagebox.showinfo(_t("표현 추출"), _t("수집 데이터에서 {n}개 후보를 '추출후보.txt'에 저장했어요.\n원하는 것만 남기고 '가져오기'로 추가하세요.").format(n=len(cands)), parent=root)
         except Exception: debug("추출 실패:\n"+traceback.format_exc())
     r_io2=mkrow(more,pady=2)
-    mkbtn(r_io2,"추출", _do_extract, color="#4b5563", side_pad=(0,3), h=30, font=FS)
-    mkbtn(r_io2,"가져오기", lambda:_io_msg(import_phrases), color="#4b5563", side_pad=(3,3), h=30, font=FS)
-    mkbtn(r_io2,"내보내기", lambda:_io_msg(export_phrases), color="#4b5563", side_pad=(3,0), h=30, font=FS)
+    mkbtn(r_io2,_t("추출"), _do_extract, color="#4b5563", side_pad=(0,3), h=30, font=FS)
+    mkbtn(r_io2,_t("가져오기"), lambda:_io_msg(import_phrases), color="#4b5563", side_pad=(3,3), h=30, font=FS)
+    mkbtn(r_io2,_t("내보내기"), lambda:_io_msg(export_phrases), color="#4b5563", side_pad=(3,0), h=30, font=FS)
 
     # ── 설정 ──
-    ctk.CTkLabel(more,text="설정",font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(8,1))
+    ctk.CTkLabel(more,text=_t("설정"),font=(UIFONT,11,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=16,pady=(8,1))
     r_set=mkrow(more,pady=2)
     as_btn=ctk.CTkButton(r_set,font=FS,height=30)
     def _refresh_as():
         on=autostart_enabled()
-        as_btn.configure(text=("자동시작: 켜짐" if on else "자동시작: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
+        as_btn.configure(text=_t("자동시작: 켜짐") if on else _t("자동시작: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
     def toggle_autostart():
         set_autostart(not autostart_enabled()); _refresh_as()
     as_btn.configure(command=toggle_autostart); _refresh_as(); as_btn.pack(side="left",expand=True,fill="x",padx=(0,3))
-    _thmap={"auto":"자동","light":"라이트","dark":"다크"}
+    _thmap={"auto":_t("자동"),"light":_t("라이트"),"dark":_t("다크")}
     th_btn=ctk.CTkButton(r_set,font=FS,height=30,fg_color="#7c3aed",hover_color="#6a2fd0")
     def _cycle_theme():
         order=["auto","light","dark"]; d=load_settings(); cur=d.get("theme","auto")
         nxt=order[(order.index(cur)+1)%3] if cur in order else "auto"
         d["theme"]=nxt; save_settings(d)
-        th_btn.configure(text="테마: "+_thmap[nxt])
+        th_btn.configure(text=_t("테마: ")+_thmap[nxt])
         try: ctk.set_appearance_mode({"auto":"system","light":"light","dark":"dark"}[nxt])
         except Exception: pass
-    th_btn.configure(command=_cycle_theme, text="테마: "+_thmap.get(_cfg.get("theme","auto"),"자동")); th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
+    th_btn.configure(command=_cycle_theme, text=_t("테마: ")+_thmap.get(_cfg.get("theme","auto"),_t("자동"))); th_btn.pack(side="left",expand=True,fill="x",padx=(3,0))
+
+    # 언어 (재시작 후 적용)
+    def _toggle_lang():
+        nxt="en" if LANG=="ko" else "ko"
+        try: d=load_settings(); d["lang"]=nxt; save_settings(d)
+        except Exception: pass
+        from tkinter import messagebox
+        messagebox.showinfo(_t("언어"), _t("언어를 바꿨습니다. 다시 시작하면 완전히 적용됩니다."), parent=root)
+    ctk.CTkButton(more,text=_t("언어: 한국어"),font=FS,command=_toggle_lang,fg_color="#4b5563",height=28).pack(fill="x",padx=14,pady=(2,2))
 
     # 앱별 자동완성
     appf=ctk.CTkFrame(more); appf.pack(fill="x",padx=14,pady=(6,2))
-    ctk.CTkLabel(appf,text="앱별 자동완성",font=(UIFONT,10,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=10,pady=(5,0))
-    app_var=tk.StringVar(value="직전 앱을 확인 중...")
+    ctk.CTkLabel(appf,text=_t("앱별 자동완성"),font=(UIFONT,10,"bold"),text_color=SUB,anchor="w").pack(fill="x",padx=10,pady=(5,0))
+    app_var=tk.StringVar(value=_t("직전 앱을 확인 중..."))
     ctk.CTkLabel(appf,textvariable=app_var,font=FS,text_color=SUB,justify="left",anchor="w",wraplength=330).pack(fill="x",padx=10)
     def _toggle_app():
         name=_last_fg_app
         if not name:
-            app_var.set("직전에 쓰던 다른 앱이 없습니다. 다른 창을 클릭한 뒤 다시 눌러주세요."); return
+            app_var.set(_t("직전에 쓰던 다른 앱이 없습니다. 다른 창을 클릭한 뒤 다시 눌러주세요.")); return
         if name in BLOCKED_APPS: BLOCKED_APPS.discard(name)
         else: BLOCKED_APPS.add(name)
         try:
             d=load_settings(); d["disabled_apps"]=sorted(BLOCKED_APPS); save_settings(d)
         except Exception: pass
-    ctk.CTkButton(appf,text="직전 앱 자동완성 켜기 / 끄기",font=FS,command=_toggle_app,fg_color="#4b5563",height=30).pack(fill="x",padx=10,pady=(4,7))
-    ctk.CTkLabel(more,text="빠른 토글: Ctrl + Alt + Space",font=(UIFONT,10),text_color=SUB).pack(pady=(1,1))
+    ctk.CTkButton(appf,text=_t("직전 앱 자동완성 켜기 / 끄기"),font=FS,command=_toggle_app,fg_color="#4b5563",height=30).pack(fill="x",padx=10,pady=(4,7))
+    ctk.CTkLabel(more,text=_t("빠른 토글: Ctrl + Alt + Space"),font=(UIFONT,10),text_color=SUB).pack(pady=(1,1))
 
     # 제안 개수 + 글자 크기
     r_io=mkrow(more,pady=2)
-    ctk.CTkLabel(r_io,text="제안 개수",font=FS,text_color=SUB).pack(side="left")
+    ctk.CTkLabel(r_io,text=_t("제안 개수"),font=FS,text_color=SUB).pack(side="left")
     _ms=tk.IntVar(value=MAX_SUG)
     def _set_maxsug(*_):
         global MAX_SUG
@@ -1610,7 +1697,7 @@ def run_ui():
         except Exception: pass
     tk.Spinbox(r_io,from_=3,to=12,width=3,textvariable=_ms,command=_set_maxsug,font=F,justify="center",
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="left",padx=(6,12))
-    ctk.CTkLabel(r_io,text="글자 크기",font=FS,text_color=SUB).pack(side="left")
+    ctk.CTkLabel(r_io,text=_t("글자 크기"),font=FS,text_color=SUB).pack(side="left")
     _fs=tk.IntVar(value=OV_FONT)
     def _set_ovfont(*_):
         global OV_FONT
@@ -1630,7 +1717,7 @@ def run_ui():
     lm_btn=ctk.CTkButton(r_perf,font=FS,height=30)
     def _refresh_lm():
         on=LIGHT_MODE
-        lm_btn.configure(text=("가벼운 모드: 켜짐" if on else "가벼운 모드: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
+        lm_btn.configure(text=_t("가벼운 모드: 켜짐") if on else _t("가벼운 모드: 꺼짐"), fg_color=("#0d9488" if on else "#6b7280"))
     def _toggle_lm():
         global LIGHT_MODE
         LIGHT_MODE=not LIGHT_MODE
@@ -1649,10 +1736,10 @@ def run_ui():
         try:
             days=int(_kd.get() or 0) or 30
             n=_clean_old_logs(days)
-            from tkinter import messagebox; messagebox.showinfo("로그 정리", f"오래된 로그 {n}개를 정리했습니다.", parent=root)
+            from tkinter import messagebox; messagebox.showinfo(_t("로그 정리"), _t("오래된 로그 {n}개를 정리했습니다.").format(n=n), parent=root)
         except Exception: debug("로그 정리 실패:\n"+traceback.format_exc())
-    ctk.CTkButton(r_perf,text="정리",font=FS,command=_do_clean,fg_color="#4b5563",width=48,height=30).pack(side="right",padx=(3,0))
-    ctk.CTkLabel(r_perf,text="일 보관",font=FS,text_color=SUB).pack(side="right",padx=(2,0))
+    ctk.CTkButton(r_perf,text=_t("정리"),font=FS,command=_do_clean,fg_color="#4b5563",width=48,height=30).pack(side="right",padx=(3,0))
+    ctk.CTkLabel(r_perf,text=_t("일 보관"),font=FS,text_color=SUB).pack(side="right",padx=(2,0))
     tk.Spinbox(r_perf,from_=0,to=365,width=4,textvariable=_kd,command=_set_keep,font=F,justify="center",
                relief="flat",bg=LB_BG,fg=LB_FG,buttonbackground=LB_BG,highlightthickness=0).pack(side="right",padx=(3,0))
     _refresh_more()
@@ -1661,14 +1748,14 @@ def run_ui():
         def _onboard():
             try:
                 from tkinter import messagebox
-                messagebox.showinfo("타이핑 도우미 시작하기",
-                    "1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
+                messagebox.showinfo(_t("타이핑 도우미 시작하기"),
+                    _t("1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
                     "2) ↑/↓로 고르고 Tab으로 채웁니다 (Esc로 닫기).\n"
                     "3) 백틱( ` )을 누르면 문구·상용구 검색창이 열려요.\n"
                     "4) 단축키를 치고 스페이스/엔터 → 그 자리에서 상용구로 자동확장.\n"
                     "5) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
                     "· 최근 1시간에 친 문장은 자동으로 후보에 올라옵니다.\n"
-                    "· 문구는 '더보기 → 📝문구', 상용구/단축키는 '더보기 → ⚡상용구' 파일로 관리합니다.",
+                    "· 문구는 '더보기 → 📝문구', 상용구/단축키는 '더보기 → ⚡상용구' 파일로 관리합니다."),
                     parent=root)
             except Exception: pass
             try:
