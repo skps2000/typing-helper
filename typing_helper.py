@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v43(매칭 워커 스레드 분리: 입력 무방해) boot ===")
+debug("=== v44(매칭 미세최적화: 경계캐시+풀 1회+최근상한) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.41.0"
+APP_VERSION="0.42.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -317,6 +317,9 @@ def note_recent(text, now=None):
         v=RECENT.get(t)
         if v: v[0]+=1; v[1]=now
         else: RECENT[t]=[1,now]
+        if len(RECENT)>200:                    # 상한: 오래된 것부터 정리(정렬 비용·메모리 억제)
+            for k in sorted(RECENT, key=lambda k:RECENT[k][1])[:len(RECENT)-200]:
+                RECENT.pop(k,None)
 def recent_active(now=None):
     # 만료(1시간 초과) 제거 후, 자주/최근 순으로 정렬된 문구 목록.
     now=now or time.time(); cut=now-RECENT_TTL
@@ -331,8 +334,7 @@ def _match_pool():
     seen=set(r); base=list(r)
     for t in SNIPPET_TEXTS:
         if t not in seen: seen.add(t); base.append(t)
-    if not base: return PHRASE_LIST
-    return base+[p for p in PHRASE_LIST if p not in seen]
+    return base+[p for p in PHRASE_LIST if p not in seen] if base else list(PHRASE_LIST)
 def seed_recent():
     # 시작 시 오늘 로그에서 최근 1시간 입력을 복원(재시작해도 이어지게).
     import re
@@ -501,13 +503,22 @@ def _clean_old_logs(days=30, root=None, today=None):
                 except Exception: pass
     except Exception: pass
     return n
-def _match_from_boundary(prefix, n):
+_BOUND={}
+def _bounds(p):
+    # 표현의 단어경계 오프셋([0] + 공백 다음 위치들)을 표현별로 캐시(매칭 때마다 재계산 방지).
+    b=_BOUND.get(p)
+    if b is None:
+        if len(_BOUND)>4000: _BOUND.clear()   # 무한 성장 방지(세션 장기 사용)
+        b=[0]+[i+1 for i,c in enumerate(p) if c==" "]
+        _BOUND[p]=b
+    return b
+def _match_from_boundary(prefix, n, pool=None):
     # 각 표현에서 '단어 경계'(맨 앞 또는 공백 다음)에 prefix가 오는 가장 이른 위치를 찾아
     # 그 위치부터 끝까지(꼬리)를 후보로 낸다. 예) prefix="너한테",
     # "켜고 너한테 말하는 거야..." -> 후보 "너한테 말하는 거야..."
     L=len(prefix); pl=prefix.lower(); seen=set(); ranked=[]
-    for p in _match_pool():          # 최근입력(핫) + 상용구 + 저장표현
-        positions=[0]+[i+1 for i,c in enumerate(p) if c==" "]
+    for p in (pool if pool is not None else _match_pool()):   # 최근입력(핫) + 상용구 + 저장표현
+        positions=_bounds(p)         # 단어경계 위치(표현별 캐시)
         for pos in positions:
             tail=p[pos:]
             if len(tail)>L and (tail.startswith(prefix) or tail.lower().startswith(pl)):
@@ -530,12 +541,13 @@ def _suffix_candidates(s):
         if i==0 or len(cand)>=2:   # 전체는 항상, 백오프 접미는 2자 이상만(노이즈 억제)
             out.append(cand)
     return out
-def _matches_for(text, n=MAX_SUG, min_prefix=1):
+def _matches_for(text, n=MAX_SUG, min_prefix=1, pool=None):
     # 접두사(text)에 접미 백오프 + 단어경계 매칭. (후보목록, 매칭접두사) 반환.
     if not text: return [], ""
+    if pool is None: pool=_match_pool()          # 풀은 한 번만 만들어 재사용(재정렬/재구성 방지)
     for prefix in _suffix_candidates(text):
         if len(prefix)<min_prefix: continue
-        hits=_match_from_boundary(prefix, n)
+        hits=_match_from_boundary(prefix, n, pool)
         if hits: return hits, prefix
     return [], ""
 def _line_before_caret(text, cap=80):
@@ -547,8 +559,9 @@ def top_matches(cur_latin, n=None):
     # 커서 위 목록용 - 키 입력을 한글로 조합(우선)하거나 영문 자판 그대로 매칭.
     if n is None: n=MAX_SUG      # 설정에서 바뀐 개수를 호출 시점에 반영
     if len(cur_latin)<MIN_PREFIX: return [], ""
+    pool=_match_pool()           # 풀을 한 번만 만들어 두 base 매칭에 공유
     for base in (compose(cur_latin), cur_latin):
-        items,pref=_matches_for(base, n)
+        items,pref=_matches_for(base, n, pool=pool)
         if items: return items, pref
     return [], ""
 def reco_matches(q, k=40):
