@@ -1,80 +1,105 @@
-# 타이핑 도우미 (Typing Helper)
+# Typing Helper
 
-Windows에서 **내가 타이핑·복붙한 내용을 수집** → **AI로 교정** → 그 데이터로 **어디서든 자동완성**을 제공하는 개인용 도구.
+> 🌐 **English** · [한국어](README.ko.md)
 
-## 목표 파이프라인
+**A lightweight personal autocomplete for Windows that learns from what _you_ actually type** — and completes your own phrases anywhere (browsers, editors, chat) via a small popup right above the caret. Press `Tab` to fill.
 
-```
-[1단계 수집]  내 타이핑/복붙 기록  →  typing_YYYY-MM-DD.txt
-      │
-[2단계 교정]  타 AI에게 교정 요청(프롬프트+파일)  →  phrases.txt
-      │
-[3단계 자동완성]  타이핑 중 회색 제안 → Tab으로 채움 (전역)
-```
+Built first-class for **Korean (Dubeolsik) typing** — it composes Hangul from physical keys (`dkssud → 안녕`) — and adds **snippet / abbreviation expansion**, a **quick phrase search**, and **real‑time suggestions from your last hour of typing**.
 
-## 주요 기능
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/skps2000/typing-helper)](https://github.com/skps2000/typing-helper/releases)
+[![Tests](https://github.com/skps2000/typing-helper/actions/workflows/tests.yml/badge.svg)](https://github.com/skps2000/typing-helper/actions/workflows/tests.yml)
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
 
-- **모던 UI(CustomTkinter)**: 대시보드를 최신 데스크톱 앱 느낌으로 리디자인(둥근 위젯·다크/라이트·상태 색). 자동완성 오버레이는 경량 유지.
-- **간소화된 실행 창**: 기본 화면은 **수집 / 자동완성 토글 2개**만. 설정·상용구·추출·테마 등 나머지는 **더보기**로 접어 둠(상태 저장).
-- **상용구 / 단축키**: `상용구.txt`(한 줄에 `단축키=문구`)로 관리. **① 자동확장** — 타이핑 중 단축키를 치고 **스페이스/엔터**를 누르면 그 자리에서 문구로 즉시 바뀜(예: `ㄱㅅ` + 스페이스 → "감사합니다…"). 한글 조합 길이만큼만 지워 정확히 교체. 문구에 `{..}`를 넣으면 삽입 후 그 자리가 **선택**돼 바로 덮어쓸 수 있음. **② 백틱 검색** — **`` ` ``** 을 누르면 커서 옆 검색창이 열려 단축키/문구 일부로 찾아 **Enter로 삽입**.
-- **최근 1시간 실시간 후보**: 방금 친 문장을 자동으로 자동완성 후보에 올림(1시간 유지, 자주 친 것 우선). 그 시간대에 반복되는 표현이 바로 뜸(재시작해도 오늘 로그에서 복원).
+<!-- TODO: add docs/screenshot.png and a short demo GIF -->
 
-- **수집**: 전역 키보드 후킹으로 타이핑 기록. 두벌식 **한글 자동 조합**(예: `dkssud` → `안녕`). 복사/붙여넣기는 클립보드 감시로 완전 포착. 원본 키는 `raw_*.txt`에 백업.
-- **경량**: 후킹 콜백은 메모리 적재만, 파일 저장은 백그라운드 스레드 배치 → 타이핑 지연 없음.
-- **대시보드 UI**(tkinter): 수집/자동완성 ON·OFF, 교정 프롬프트 가이드·데이터 폴더·`phrases.txt` 열기, 오늘 수집량 표시.
-- **자동완성**: `phrases.txt`를 읽어 타이핑 중 **커서 위에 후보 목록**을 띄움. `↑`/`↓`로 선택, `Tab`으로 채우기, `Esc`로 닫기. 파일 저장 시 자동 재로딩.
-- **수집 데이터 자동 추출**: 고급 설정의 **🔎 수집 데이터에서 표현 추출**로 그동안 친 문장에서 표현 후보를 뽑아(민감정보·잡음·중복 제외) `추출후보.txt`로 저장 → 원하는 것만 **가져오기**로 추가.
-- **표현 직접 추가**: 대시보드에서 문구를 적고 **＋ 표현 추가**로 바로 등록·삭제. 수집·교정을 거치지 않고 원하는 표현만 골라 쓸 수 있음.
-- **트레이 아이콘**: 창의 **X는 실제 종료**. 백그라운드로 쓰려면 **트레이로 숨기기** → 알림 영역 아이콘에서 열기/수집·자동완성 토글/종료. 트레이가 없는 환경에서는 자동으로 최소화로 대체.
-- **제안 지속 + 커서 추종**: 후보가 있는 동안 목록을 계속 노출하고, **UI Automation으로 실제 커서 위치**를 따라감. Chromium/Electron(예: Claude) 창에서도 커서 옆에 표시.
-- **실제 텍스트 보정**: 키 입력 조합이 어긋나거나(백스페이스) 마우스로 커서를 옮겨도, UIA로 **커서 앞 실제 글자**를 읽어 정확히 매칭.
-- **단어 경계·접미 백오프 매칭**: 문구 중간 단어(`너한테`→`너한테 …`)도, 앞 단어가 안 맞아도 뒤 단어부터 매칭.
-- **사용 학습**: `Tab`으로 자주 채택한 표현이 다음부터 위로 정렬(`usage.json`).
-- **초성 검색 + 오타 보정**: 대시보드 검색창에서 `ㅂㄹㅍ` → `브리핑…`, 오타(`확인해바`)도 RapidFuzz로 `확인해봐`를 찾아줌.
-- **다크/라이트 테마**: sv-ttk 기반. 대시보드 하단 **테마** 버튼으로 자동/라이트/다크 전환(재시작 시 완전 적용).
-- **앱별 자동완성 on/off**: 특정 앱(실행파일명)에서만 자동완성을 끌 수 있음. 대시보드 **앱별 자동완성**에서 직전 사용 앱을 토글(설정에 저장). 코드 에디터·터미널 등에서 방해되지 않게.
-- **빠른 토글 핫키**: `Ctrl + Alt + Space` 로 자동완성을 즉시 켜고 끔(상태는 저장됨).
-- **설정 유지 / 부팅 자동시작**: 수집·자동완성·자동복사 상태를 `settings.json`에 저장·복원. 대시보드에서 **부팅 시 자동시작** 토글(HKCU Run, 관리자 권한 불필요).
-- **트레이 아이콘**: 창의 **X는 실제 종료**. 백그라운드로 쓰려면 **트레이로 숨기기** → 알림 영역 아이콘에서 열기/토글/종료.
-- **중복 실행 방지**(단일 인스턴스), 표현 로딩 시 끝 공백·중복 줄 자동 정리.
-- **테스트**: `tests/test_core.py`(조합·매칭·백오프·학습·설정·보안·상용구·최근입력 등 110케이스). 실행: `python tests/test_core.py`.
+## Why
 
-## 저장 위치
+Generic autocomplete doesn't know how *you* phrase things. Typing Helper collects your own typing **locally**, lets you curate a phrase list, and then completes those phrases **everywhere** — anchored to the text caret, not tied to any single app.
 
-`%LOCALAPPDATA%\TypingHelper\` (platformdirs) — 예: `C:\Users\<사용자>\AppData\Local\TypingHelper`
-- `typing_YYYY-MM-DD.txt` — 한글 조합된 읽기용 기록 + 복붙 내용
-- `raw_YYYY-MM-DD.txt` — 원본 키 백업
-- `phrases.txt` — 교정 결과(자동완성 소스), `usage.json` — 사용 학습, `settings.json` — 설정, `phrases_trash.txt` — 삭제 휴지통
-- `교정프롬프트_가이드.txt` — 타 AI 교정용 프롬프트
+## Highlights
 
-> 예전 위치 `내 문서\TypingLog`의 핵심 파일은 첫 실행 시 새 폴더로 **자동 복사**되며 원본은 그대로 남습니다. OneDrive로 리디렉션되는 `내 문서` 대신 로컬 전용 폴더를 써서 "로컬에만 저장" 원칙을 지킵니다. 개인 데이터는 저장소에 포함되지 않습니다.
+- **Learns from your typing** — a global keyboard hook records what you type (with **Dubeolsik Hangul composition**) and clipboard paste. Your curated phrases live in a plain `phrases.txt`.
+- **Caret‑anchored suggestions** — a popup appears right above the cursor while you type. `↑`/`↓` to move, `Tab` to fill, `Esc` to dismiss (stays hidden until you type again). Works even in Chromium/Electron apps via **UI Automation** caret tracking.
+- **Snippets & abbreviation expansion** — manage `상용구.txt` as `alias=phrase`. Type the alias + `Space/Enter` to **expand in place** (e.g. `ㄱㅅ` → "감사합니다…"); use `{..}` placeholders to jump‑select after insert. Press **`` ` `` (backtick)** anywhere to open a **search box** and pick a phrase.
+- **Recent‑hour suggestions** — whatever you typed in the last hour is offered automatically (most‑used first), so repeated phrasing in a session completes instantly.
+- **Typing is never blocked** — keystroke handling only updates a buffer; all matching runs on a **dedicated worker thread**. File writes are batched in the background.
+- **Smart matching** — Hangul composition + initial‑consonant search (`ㅂㄹㅍ → 브리핑…`) + fuzzy typo tolerance (RapidFuzz) + word‑boundary/suffix backoff. Frequently accepted phrases rank higher over time.
+- **Stays out of the way** — per‑app on/off (disable in your code editor/terminal), quick toggle hotkey `Ctrl + Alt + Space`, password fields skipped, tray icon, single instance, optional run‑at‑startup.
+- **Modern dashboard** (CustomTkinter) — a compact window with just **Collect / Autocomplete** toggles up front; everything else folds under **More**. Bilingual UI (auto‑detects Korean/English, with a manual toggle).
 
-## 사용법
+## Install
 
-1. [Releases](https://github.com/skps2000/typing-helper/releases)에서 `TypingHelper.exe` 내려받아 실행 (창 뜸)
-2. 며칠 평소처럼 사용 → 데이터 수집
-3. 대시보드 **교정 프롬프트 가이드 열기** → 프롬프트 복사 → 타 AI에 `typing_*.txt`와 함께 전송
-4. AI 결과(표현 한 줄씩)를 **교정결과(phrases.txt) 열기**로 붙여넣고 저장
-5. 이제 타이핑하면 **커서 위에 후보 목록** → `↑`/`↓`로 고르고 **Tab**으로 채움 (`Esc`로 닫기)
-6. 자주 쓰는 문구/상용구는 **더보기 → 📝문구 / ⚡상용구** 파일을 열어 한 줄씩 추가 (저장하면 자동 반영, 민감정보는 넣지 마세요)
-7. 타이핑 중 **백틱( ` )** 을 누르면 검색창이 열려 문구·상용구를 찾아 **Enter로 삽입**
+1. Download **`TypingHelper.exe`** from the [Releases](https://github.com/skps2000/typing-helper/releases) page.
+2. Run it — no installation. A dashboard window opens and it starts collecting.
 
-## 소스에서 빌드 (Windows)
+> Windows may warn about an unsigned executable (SmartScreen) — this is expected for an unsigned open‑source build. You can review the source and [build it yourself](#build-from-source).
+
+## Usage
+
+1. Type normally for a while so it collects data.
+2. (Optional) Use **More → Guide** to get a correction prompt, and paste your `typing_*.txt` into any AI to clean it up.
+3. Put the resulting phrases (one per line) into **More → Phrases** (`phrases.txt`) and save.
+4. Now as you type, a **suggestion list appears above the caret** — `↑`/`↓` to choose, **`Tab`** to fill, `Esc` to close.
+5. Add frequently used phrases/snippets under **More → Phrases / Snippets**.
+6. Press **`` ` ``** anytime to search phrases/snippets and insert with `Enter`.
+
+## Privacy & Security
+
+**Typing Helper is a global keystroke logger by design** — that's how it learns your phrases. It is built to keep this **local and transparent**:
+
+- **Everything is stored locally** under `%LOCALAPPDATA%\TypingHelper\` and is **never sent anywhere** by the app. (Logs leave your machine only if *you* choose to send a file to an AI for correction.)
+- **Password fields are skipped** — when UI Automation reports `IsPassword`, both collection and suggestions are turned off. (Field detection takes a few dozen ms, so the first character or two may still be recorded — not a hard guarantee.)
+- **Long digit runs** (card/account/phone‑like, including separators) are **not recorded** from the clipboard.
+- Typing into the app's **own dashboard is never collected**.
+- Deleted phrases go to `phrases_trash.txt` (a recoverable trash), not immediate deletion.
+
+Please only use this on machines you own, and don't put secrets into the phrase files. See [SECURITY.md](SECURITY.md).
+
+## How it works
+
+- **Dubeolsik composition** — reconstructs Hangul syllables from QWERTY physical keys.
+- **Global hook** — `pynput` low‑level keyboard hook; the raw hook stays minimal so it never delays keystrokes.
+- **Caret tracking** — `comtypes` + UI Automation reads the caret rectangle (and, only when needed, the text before the caret) to place the popup and correct desyncs. Heavy UIA text reads are skipped during normal typing.
+- **Matching** — runs off the input thread on a worker; pool = recent + snippets + saved phrases, with cached word boundaries.
+- **UI** — CustomTkinter dashboard + a lightweight Tk overlay/picker; `pystray` tray icon.
+
+## Data location
+
+`%LOCALAPPDATA%\TypingHelper\` (via `platformdirs`):
+
+| File | Purpose |
+|---|---|
+| `typing_YYYY-MM-DD.txt` | Composed, human‑readable typing log + pasted text |
+| `raw_YYYY-MM-DD.txt` | Raw key backup |
+| `phrases.txt` | Autocomplete source (your curated phrases) |
+| `상용구.txt` | Snippets / abbreviations (`alias=phrase`) |
+| `usage.json`, `settings.json`, `pinned.json` | Usage learning, settings, pins |
+| `phrases_trash.txt` | Recoverable trash for deleted phrases |
+
+## Build from source
+
+Requires Windows + Python 3.12.
 
 ```bat
 pip install -r requirements.txt
-pyinstaller --onefile --noconsole --collect-all tkinter --hidden-import pynput.keyboard._win32 --name TypingHelper typing_helper.py
+python tests\test_core.py
+
+pyinstaller --onefile --noconsole ^
+  --collect-all tkinter --collect-all comtypes --collect-all rapidfuzz ^
+  --collect-all customtkinter --collect-all darkdetect ^
+  --hidden-import platformdirs --collect-submodules platformdirs ^
+  --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 ^
+  --hidden-import pystray._win32 --hidden-import comtypes.stream ^
+  --name TypingHelper typing_helper.py
 ```
-> 참고: 빌드된 exe는 저장소에 커밋하지 않고 [Releases](https://github.com/skps2000/typing-helper/releases)로 배포합니다. 저장소에는 소스만 둡니다.
 
-## 한계 / TODO
+The build outputs `dist\TypingHelper.exe`. Releases are also built automatically on tag push (see `.github/workflows/release.yml`); the repo keeps **source only** (the exe is not committed).
 
-- 타이핑은 물리 키만 잡혀 **한/영 모드 구분 불가** → 조합기는 기본 한글 가정, 영문은 `raw`로 복구 필요 (모드 판별 개선 예정)
-- **제안 목록 위치**가 일부 앱에서 캐럿과 어긋날 수 있음(GetGUIThreadInfo 기반, 캐럿을 못 찾으면 마우스 근처로 폴백) → 앱별 튜닝 예정
-- 목록이 떠 있는 동안 `↑`/`↓`/`Tab`을 가로채므로, 그 사이 해당 키의 원래 동작은 잠시 막힘 (`Esc`로 닫으면 해제)
-- 2단계 교정 자동화(선택), 부팅 자동시작 옵션
+## Contributing
 
-## 보안 주의
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). All core logic (Hangul composition, matching, snippets, settings, security filters) is covered by `tests/test_core.py` (138 cases): `python tests/test_core.py`.
 
-키 입력을 저장하므로 민감정보가 기록될 수 있습니다. 이를 줄이기 위해 **비밀번호 입력란(UI Automation `IsPassword`)에서는 수집과 자동완성을 모두 건너뜁니다**. 다만 필드 감지에 수십 ms가 걸려 첫 한두 글자가 남을 수 있으니 완전한 보장은 아닙니다. 로그는 로컬에만 저장되며, 외부 AI 교정 시 민감정보를 제거하도록 프롬프트에 명시돼 있습니다. 삭제한 표현은 즉시 지우지 않고 `phrases_trash.txt`(휴지통)에 보관해 **삭제취소**로 복원할 수 있습니다. 클립보드 수집도 카드·계좌·전화처럼 **긴 숫자열(구분자 포함)이 있으면 기록하지 않습니다**. 우리 대시보드 창에 입력할 때는 수집·자동완성이 모두 꺼집니다.
-# typing-helper
+## License
+
+[MIT](LICENSE) © Typing Helper contributors

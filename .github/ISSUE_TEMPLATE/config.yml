@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or privacy report
+    url: https://github.com/skps2000/typing-helper/blob/main/SECURITY.md
+    about: Please report vulnerabilities privately — do not open a public issue.
