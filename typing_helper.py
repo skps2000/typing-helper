@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v42(UIA 최적화: 텍스트읽기 최소화 + 느린사이클 계측) boot ===")
+debug("=== v43(매칭 워커 스레드 분리: 입력 무방해) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.40.0"
+APP_VERSION="0.41.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -639,11 +639,11 @@ def on_press(key):
         vk=getattr(key,"vk",None)
         if _ctrl and vk in (VK_C,VK_V,VK_X):
             if vk==VK_V: _paste=True
-            _cur.clear(); _update_sug()
+            _cur.clear(); request_sug()
             return
         ch=getattr(key,"char",None)
         if ch=="`":                 # 백틱은 상용구 검색 트리거 - 수집/버퍼에 넣지 않는다
-            _cur.clear(); _update_sug(); return
+            _cur.clear(); request_sug(); return
         # 목록이 떠 있는 동안의 ↑/↓ 는 '목록 탐색'이다(이동은 win_filter가 처리).
         # 여기서 _cur를 지우거나 제안을 다시 계산하면 선택이 0번으로 리셋돼 연속 이동이 안 된다.
         if key in (keyboard.Key.up,keyboard.Key.down) and ACOMP and S["items"] and not _self_focused and not _in_password:
@@ -668,7 +668,7 @@ def on_press(key):
         elif key==keyboard.Key.esc: _cur.clear(); _dismiss=True   # ESC -> 다시 칠 때까지 숨김
         elif key==keyboard.Key.enter: _cur.clear()
         elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿 이동 시
-        _update_sug()
+        request_sug()                              # 계산은 워커에서 - 여기선 즉시 반환
     except Exception:
         debug("on_press 예외:\n"+traceback.format_exc())
 
@@ -700,6 +700,18 @@ def _update_sug():
     if not items and USE_UIA_PREFIX and _uia_prefix:   # 버퍼가 비었/어긋났으면 실제 텍스트로 보정
         items,pref=_matches_for(_uia_prefix, MAX_SUG, min_prefix=2)
     _set_sug(items,pref)          # 글자를 더 치면 선택은 항상 첫 항목으로
+# 제안 계산은 전용 워커에서만 한다 -> on_press(리스너 스레드)는 버퍼만 갱신하고 즉시 반환.
+# 어떤 경우에도 키 입력 처리가 매칭 비용을 기다리지 않게 한다(타이핑 무방해 보장).
+_sug_event=threading.Event()
+def request_sug():
+    _sug_event.set()
+def _sug_worker():
+    while True:
+        try:
+            _sug_event.wait(); _sug_event.clear()   # 여러 키가 몰리면 최신 상태로 한 번만 계산(코얼레싱)
+            _update_sug()
+        except Exception: debug("sug worker 예외:\n"+traceback.format_exc())
+        time.sleep(0.008)                            # 폭주 입력을 살짝 합쳐 CPU 절약(체감 지연 없음)
 def move_sel(d):
     # 화살표로 후보 이동. 저수준 훅 콜백에서 불리므로 Tk를 건드리지 않는다.
     n=len(S["items"])
@@ -977,7 +989,7 @@ def caret_tracker():
             if xy: _caret_xy=xy
             if got_text and newp!=_uia_prefix:         # 실제 텍스트가 바뀌면(마우스/편집/삭제) 반영
                 _uia_prefix=newp
-                if time.time()-_last_key<1.5: _update_sug()   # 최근 타이핑 중일 때만 능동 표시
+                if time.time()-_last_key<1.5: request_sug()   # 최근 타이핑 중일 때만 능동 표시(계산은 워커)
             _uia_log(time.perf_counter()-t0, parts)
         except Exception: pass
         time.sleep(0.05 if S["items"] else 0.12)
@@ -1349,6 +1361,7 @@ def run_ui():
     threading.Thread(target=writer,daemon=True).start()
     LISTENER=keyboard.Listener(on_press=on_press,on_release=on_release,win32_event_filter=win_filter)
     LISTENER.start(); debug("리스너 시작")
+    threading.Thread(target=_sug_worker,daemon=True).start()   # 제안 계산 워커(입력 스레드와 분리)
     threading.Thread(target=caret_tracker,daemon=True).start()
 
     try: ctk.set_default_color_theme("blue")

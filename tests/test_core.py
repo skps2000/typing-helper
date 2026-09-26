@@ -639,6 +639,27 @@ def test_dismiss_and_nav():
         (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
          th._cur, th.S, th._uia_prefix) = old
 
+def test_sug_worker_coalesce():
+    # 워커 분리: request_sug()는 이벤트만 세우고, 계산은 워커 루프 몸통(_update_sug)에서.
+    setup()
+    old = (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
+           list(th._cur), dict(th.S), th._uia_prefix)
+    try:
+        th.RECENT.clear(); th.SNIPPET_TEXTS[:] = []
+        th.ACOMP = True; th._self_focused = False; th._in_password = False
+        th._app_blocked = False; th._dismiss = False; th._uia_prefix = ""
+        th._sug_event.clear()
+        th._cur = list("ghkrdls")           # 확인
+        th.request_sug()
+        check("request_sug가 이벤트를 세움", th._sug_event.is_set())
+        # 워커 루프 1회분을 흉내: wait 통과 -> clear -> 계산
+        th._sug_event.clear(); th._update_sug()
+        check("워커 계산 후 제안 반영", len(th.S["items"]) > 0, str(th.S["items"][:2]))
+        check("계산 후 이벤트 비어있음", not th._sug_event.is_set())
+    finally:
+        (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
+         th._cur, th.S, th._uia_prefix) = old
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -653,7 +674,8 @@ def main():
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
                test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates,
                test_snippets_parse, test_recent_pool, test_recent_boost_match,
-               test_alias_autoexpand, test_do_expand_sequence, test_dismiss_and_nav]:
+               test_alias_autoexpand, test_do_expand_sequence, test_dismiss_and_nav,
+               test_sug_worker_coalesce]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")
