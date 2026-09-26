@@ -609,6 +609,36 @@ def test_do_expand_sequence():
         try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_exp.json"))
         except Exception: pass
 
+def test_dismiss_and_nav():
+    setup()  # PHRASE_LIST = SAMPLE
+    old = (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
+           list(th._cur), dict(th.S), th._uia_prefix)
+    try:
+        th.RECENT.clear(); th.SNIPPET_TEXTS[:] = []
+        th.ACOMP = True; th._self_focused = False; th._in_password = False; th._app_blocked = False
+        th._uia_prefix = ""
+        # 타이핑 -> 제안 노출
+        th._dismiss = False; th._cur = list("ghkrdls")  # 확인
+        th._update_sug()
+        check("타이핑 시 제안 노출", len(th.S["items"]) > 0, str(th.S["items"][:2]))
+        # ESC(dismiss) -> 숨김, UIA prefix 있어도 계속 숨김
+        th._dismiss = True; th._update_sug()
+        check("ESC 후 제안 숨김", th.S["items"] == [], str(th.S["items"]))
+        th._uia_prefix = "확인"; th._update_sug()
+        check("ESC 후 UIA로도 재노출 안 함", th.S["items"] == [], str(th.S["items"]))
+        # 다시 타이핑하면 dismiss 해제 후 노출
+        th._dismiss = False; th._update_sug()
+        check("다시 타이핑하면 재노출", len(th.S["items"]) > 0, str(th.S["items"][:2]))
+        # 화살표 연속 이동 누적(선택이 리셋되지 않음)
+        th._set_sug(["가", "나", "다"], "", 0)
+        th.move_sel(1); th.move_sel(1)
+        check("연속 위/아래 이동 누적", th.S["idx"] == 2, "idx=" + str(th.S["idx"]))
+        th.move_sel(1)  # 래핑
+        check("끝에서 한 번 더 -> 처음으로", th.S["idx"] == 0, "idx=" + str(th.S["idx"]))
+    finally:
+        (th.ACOMP, th._self_focused, th._in_password, th._app_blocked, th._dismiss,
+         th._cur, th.S, th._uia_prefix) = old
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -623,7 +653,7 @@ def main():
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
                test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates,
                test_snippets_parse, test_recent_pool, test_recent_boost_match,
-               test_alias_autoexpand, test_do_expand_sequence]:
+               test_alias_autoexpand, test_do_expand_sequence, test_dismiss_and_nav]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")

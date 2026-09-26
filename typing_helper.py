@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v39(단축키 자동확장 + 백틱검색 + 최근1시간 + 간소화UI) boot ===")
+debug("=== v40(연속 화살표 이동 + ESC 숨김유지 수정) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.37.0"
+APP_VERSION="0.38.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -605,6 +605,7 @@ _cur=[]; _injecting=False; _last_written=""; _today_count=0; _clip_seq=0
 USE_UIA_PREFIX=True; _uia_prefix=""; _last_key=0.0; _in_password=False   # UIA 커서앞 텍스트 + 최근타이핑 + 비번칸 여부
 _app_blocked=False; _last_fg_app=""; _fg_pid_cache=0; BLOCKED_APPS=set()   # 앱별 자동완성 on/off
 _self_focused=False   # 우리 대시보드에 포커스면 제안/수집 안 함
+_dismiss=False        # ESC로 목록을 닫음 - 다시 '타이핑'하기 전까지 재노출 안 함
 OUR_PID=ctypes.windll.kernel32.GetCurrentProcessId()  # 우리 창엔 제안하지 않기 위한 식별
 # 커서 위 제안 목록 상태. 리스너/훅 스레드는 값만 바꾸고 ver를 올리며,
 # 실제 그리기는 Tk 메인루프의 overlay_tick 이 맡는다(스레드 간 Tk 호출 제거).
@@ -625,7 +626,7 @@ _KEEP_CUR=frozenset({
 })
 
 def on_press(key):
-    global _ctrl,_last_input,_paste,_injecting,_last_key,_alt
+    global _ctrl,_last_input,_paste,_injecting,_last_key,_alt,_dismiss
     # 여기서 예외가 새어나가면 pynput이 리스너를 조용히 중단시킨다.
     # join()을 하는 곳이 없어서 수집이 멎어도 아무도 모른다 - 전체를 감싼다.
     try:
@@ -643,6 +644,10 @@ def on_press(key):
         ch=getattr(key,"char",None)
         if ch=="`":                 # 백틱은 상용구 검색 트리거 - 수집/버퍼에 넣지 않는다
             _cur.clear(); _update_sug(); return
+        # 목록이 떠 있는 동안의 ↑/↓ 는 '목록 탐색'이다(이동은 win_filter가 처리).
+        # 여기서 _cur를 지우거나 제안을 다시 계산하면 선택이 0번으로 리셋돼 연속 이동이 안 된다.
+        if key in (keyboard.Key.up,keyboard.Key.down) and ACOMP and S["items"] and not _self_focused and not _in_password:
+            return
         # 수집 버퍼 (비밀번호 필드/우리 대시보드에서는 기록하지 않는다)
         if COLLECTING and not _in_password and not _self_focused:
             _last_input=time.time()
@@ -656,11 +661,12 @@ def on_press(key):
         # 자동완성용 현재줄 버퍼 (비밀번호/우리 대시보드에서는 조합/제안 건너뜀)
         if _in_password or _self_focused:
             if _cur: _cur.clear()
-        elif ch is not None: _cur.append(ch)
-        elif key==keyboard.Key.space: _cur.append(" ")
+        elif ch is not None: _dismiss=False; _cur.append(ch)      # 다시 타이핑 -> 목록 재개
+        elif key==keyboard.Key.space: _dismiss=False; _cur.append(" ")
         elif key==keyboard.Key.backspace:
             _cur.clear()   # 한글 1자=영문 여러타라 하나만 pop하면 어긋남 -> 통째로 비움
-        elif key in (keyboard.Key.enter,keyboard.Key.esc): _cur.clear()
+        elif key==keyboard.Key.esc: _cur.clear(); _dismiss=True   # ESC -> 다시 칠 때까지 숨김
+        elif key==keyboard.Key.enter: _cur.clear()
         elif key not in _KEEP_CUR: _cur.clear()   # 방향키·Home/End 등 캐럿 이동 시
         _update_sug()
     except Exception:
@@ -687,7 +693,7 @@ def _toggle_acomp_hotkey():
     if not ACOMP: _set_sug([],"")
     _persist_acomp()
 def _update_sug():
-    if _self_focused or _in_password or _app_blocked or not ACOMP: _set_sug([],""); return
+    if _dismiss or _self_focused or _in_password or _app_blocked or not ACOMP: _set_sug([],""); return
     try: _cur_s="".join(_cur)      # 훅/COM 두 스레드가 부르므로 동시변경 대비 스냅샷
     except Exception: _cur_s=""
     items,pref=top_matches(_cur_s)                     # 키 입력 조합(즉각)
@@ -820,7 +826,9 @@ def win_filter(msg, data):
     elif act=="tab": threading.Thread(target=do_insert,daemon=True).start()
     elif act=="up": move_sel(-1)
     elif act=="down": move_sel(1)
-    elif act=="esc": _set_sug([],"",close=True)
+    elif act=="esc":
+        global _dismiss; _dismiss=True   # ESC -> 다시 타이핑 전까지 재노출 안 함(on_press가 억제로 안 불릴 수 있어 여기서도 세움)
+        _set_sug([],"",close=True)
     LISTENER.suppress_event()   # 예외를 던진다 - 반드시 바깥으로 전파되어야 한다
 
 # ---- 캐럿 위치 ----
