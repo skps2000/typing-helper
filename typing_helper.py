@@ -34,7 +34,7 @@ def debug(m):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"[{datetime.now():%H:%M:%S}] {m}\n")
     except Exception: pass
-debug("=== v38(간소화 UI + 백틱 상용구 검색 + 최근1시간 후보) boot ===")
+debug("=== v39(단축키 자동확장 + 백틱검색 + 최근1시간 + 간소화UI) boot ===")
 try:
     from pynput import keyboard
     from pynput.keyboard import Controller
@@ -57,7 +57,7 @@ except Exception:
     HAVE_SVTTK=False
 
 APP_NAME="타이핑 도우미"
-APP_VERSION="0.36.0"
+APP_VERSION="0.37.0"
 GUIDE=os.path.join(LOG_DIR,"교정프롬프트_가이드.txt")
 PHRASES=os.path.join(LOG_DIR,"phrases.txt")
 SNIPPETS=os.path.join(LOG_DIR,"상용구.txt")   # 상용구/단축키: 한 줄에 "단축키=문구" 또는 "문구"
@@ -97,8 +97,9 @@ def ensure_files():
         with open(SNIPPETS,"w",encoding="utf-8") as f:
             f.write("# 상용구 / 단축키 - 한 줄에 하나씩.\n")
             f.write("# 형식) 단축키=문구   또는   문구  (단축키 없이 문구만 써도 됩니다)\n")
-            f.write("# 사용) 타이핑 중 백틱( ` )을 누르면 검색창이 열립니다.\n")
-            f.write("#       검색창에 단축키나 문구 일부를 치고 Enter 로 현재 앱에 삽입.\n")
+            f.write("# 자동확장) 타이핑 중 '단축키'를 치고 스페이스/엔터를 누르면 그 자리에서 문구로 바뀝니다.\n")
+            f.write("#          (예: ㄱㅅ + 스페이스 -> '감사합니다. 좋은 하루 보내세요.')\n")
+            f.write("# 검색) 백틱( ` )을 누르면 검색창이 열려 단축키/문구 일부로 찾아 Enter 삽입.\n")
             f.write("# 예)\n")
             f.write("ㄱㅅ=감사합니다. 좋은 하루 보내세요.\n")
             f.write("확인 후 다시 연락드리겠습니다.\n")
@@ -254,6 +255,7 @@ def reload_phrases():
 # ---- 상용구 / 단축키 ----
 SNIPPET_LIST=[]      # [(단축키, 문구)] - 단축키는 비어 있을 수 있다
 SNIPPET_TEXTS=[]     # 문구만
+SNIPPET_ALIAS={}     # {단축키(표시형): 문구} - 타이핑 중 자동확장용
 _snip_mtime=0
 def load_snippets():
     global SNIPPET_LIST,SNIPPET_TEXTS,_snip_mtime
@@ -276,6 +278,8 @@ def load_snippets():
                 seen.add(t); out.append((a,t))
     except Exception: return
     SNIPPET_LIST=out; SNIPPET_TEXTS=[t for _,t in out]
+    global SNIPPET_ALIAS
+    SNIPPET_ALIAS={a:t for a,t in out if a}   # 단축키가 있는 것만 자동확장 대상
     debug(f"상용구 {len(out)}개 로드")
 def _snippet_alias_hits(q):
     # 검색어 q(원문/조합)가 단축키의 앞부분과 맞으면 그 문구를 돌려준다(단축키 검색).
@@ -609,6 +613,7 @@ KBD=Controller(); LISTENER=None; ROOT=None
 VK_C,VK_V,VK_X,VK_TAB,VK_ESC=67,86,88,9,27
 VK_UP,VK_DOWN=38,40
 VK_BQ=0xC0   # 백틱( ` ) = VK_OEM_3 -> 상용구/문구 검색 팝업 트리거
+VK_SPACE,VK_RETURN=0x20,0x0D   # 단축키 자동확장 트리거(스페이스/엔터)
 # 캐럿을 움직이지 않는 키들 - 자동완성 버퍼(_cur)를 지우면 안 된다.
 # Shift가 빠지면 '있습니다', '예쁘다' 처럼 쌍자음/ㅒㅖ가 든 단어에서 접두사가 통째로 날아간다.
 _KEEP_CUR=frozenset({
@@ -734,6 +739,51 @@ def do_insert():
     if acc: record_use(acc)
     _cur.clear(); _set_sug([],"",close=True)
 
+def _alias_expand_for():
+    # 지금 치고 있는 마지막 낱말이 단축키와 정확히 일치하면 (지울 글자 수, 문구)를 돌려준다.
+    # 한글 조합 결과(compose)가 화면 표시와 같으므로 그 길이만큼만 지운다.
+    if not SNIPPET_ALIAS: return None
+    try: raw="".join(_cur)
+    except Exception: return None
+    tok=raw.split(" ")[-1]        # 마지막 공백 이후 = 현재 낱말
+    if not tok: return None
+    hang=compose(tok)             # 한글 모드에서 화면에 보이는 형태
+    for disp in (hang, tok):      # 한글 별칭 우선, 그다음 영문/기호 별칭
+        t=SNIPPET_ALIAS.get(disp)
+        if t is not None and disp: return (len(disp), t)
+    return None
+def do_expand(dellen, text, add_enter):
+    # 단축키 자리(dellen 글자)를 지우고 문구를 삽입한 뒤 트리거(스페이스/엔터)를 다시 넣는다.
+    global _injecting,_last_clip
+    _injecting=True
+    try:
+        for _ in range(max(0,dellen)):
+            KBD.press(keyboard.Key.backspace); KBD.release(keyboard.Key.backspace)
+        time.sleep(0.01)
+        if len(text)>=6 and pyperclip:      # 긴 문구는 클립보드 붙여넣기
+            orig=None
+            try: orig=pyperclip.paste()
+            except Exception: orig=None
+            _last_clip=text
+            pyperclip.copy(text); time.sleep(0.02)
+            KBD.press(keyboard.Key.ctrl); KBD.press("v"); KBD.release("v"); KBD.release(keyboard.Key.ctrl)
+            time.sleep(0.12)
+            if orig is not None:
+                try: pyperclip.copy(orig); _last_clip=orig
+                except Exception: pass
+        else:
+            KBD.type(text)
+        if add_enter:
+            KBD.press(keyboard.Key.enter); KBD.release(keyboard.Key.enter)
+        else:
+            KBD.type(" ")                    # 눌렀던 스페이스 복원
+    except Exception:
+        debug("expand fail:\n"+traceback.format_exc())
+    time.sleep(0.02); _injecting=False
+    _cur.clear(); _set_sug([],"",close=True)
+    try: record_use(text)
+    except Exception: pass
+
 def win_filter(msg, data):
     # suppress_event()는 값을 반환하지 않고 SuppressException(Exception 상속)을 '발생'시켜
     # pynput에 억제를 알린다. 따라서 두 가지를 지켜야 한다.
@@ -741,12 +791,20 @@ def win_filter(msg, data):
     #  (2) 그 호출을 try/except Exception 으로 감싸지 않는다 - 감싸면 억제가 사라져
     #      Tab이 앱으로 그대로 새고, 삽입도 일어나지 않는다(기존 버그).
     # 저수준 훅 콜백이라 여기서는 Tk를 절대 호출하지 않는다(훅 타임아웃 방지).
+    exp=None
     try:
-        if msg not in (256,260) or LISTENER is None: return
+        if msg not in (256,260) or LISTENER is None or _injecting: return  # 우리가 넣는 키는 무시
         vk=getattr(data,"vkCode",0)
+        _ok=(ACOMP and not _in_password and not _self_focused)
         if vk==VK_BQ:                      # 백틱: 상용구/문구 검색 팝업
-            if not (ACOMP and not _in_password and not _self_focused): return
+            if not _ok: return
             act="pick"
+        elif vk in (VK_SPACE,VK_RETURN):   # 단축키 자동확장 트리거
+            act=None
+            if _ok:
+                exp=_alias_expand_for()
+                if exp: act="expand"
+            if act is None: return         # 일반 스페이스/엔터는 그대로 통과
         elif not ACOMP or not S["items"]: return
         elif vk==VK_TAB: act="tab"
         elif vk==VK_UP: act="up"
@@ -757,6 +815,8 @@ def win_filter(msg, data):
         debug("filter err:\n"+traceback.format_exc()); return
     # 억제(suppress_event)는 예외를 던지므로 try 밖에서 호출해야 전파된다.
     if act=="pick": post_ui(open_picker)
+    elif act=="expand":
+        d,t=exp; threading.Thread(target=do_expand,args=(d,t,vk==VK_RETURN),daemon=True).start()
     elif act=="tab": threading.Thread(target=do_insert,daemon=True).start()
     elif act=="up": move_sel(-1)
     elif act=="down": move_sel(1)
@@ -1500,7 +1560,8 @@ def run_ui():
                     "1) 평소처럼 타이핑하면 커서 위에 추천 목록이 떠요.\n"
                     "2) ↑/↓로 고르고 Tab으로 채웁니다 (Esc로 닫기).\n"
                     "3) 백틱( ` )을 누르면 문구·상용구 검색창이 열려요.\n"
-                    "4) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
+                    "4) 단축키를 치고 스페이스/엔터 → 그 자리에서 상용구로 자동확장.\n"
+                    "5) Ctrl+Alt+Space로 자동완성을 껐다 켤 수 있어요.\n\n"
                     "· 최근 1시간에 친 문장은 자동으로 후보에 올라옵니다.\n"
                     "· 문구는 '더보기 → 📝문구', 상용구/단축키는 '더보기 → ⚡상용구' 파일로 관리합니다.",
                     parent=root)

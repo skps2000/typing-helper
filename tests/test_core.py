@@ -539,6 +539,76 @@ def test_recent_boost_match():
         th.RECENT.clear(); th.RECENT.update(old_recent)
         th.PHRASE_LIST[:] = old_pl; th.SNIPPET_TEXTS[:] = old_sn
 
+def test_alias_autoexpand():
+    old_alias = dict(th.SNIPPET_ALIAS); old_cur = list(th._cur)
+    try:
+        han = th.compose("rt")   # 두벌식 r->ㄱ, t->ㅅ
+        th.SNIPPET_ALIAS.clear()
+        th.SNIPPET_ALIAS[han] = "감사합니다. 좋은 하루 보내세요."   # 한글 단축키
+        th.SNIPPET_ALIAS["sig"] = "홍길동 드림"                     # 영문 단축키
+        # 한글 단축키: 마지막 낱말이 정확히 일치 -> (지울 글자수=조합 길이, 문구)
+        th._cur[:] = list("rt")
+        r = th._alias_expand_for()
+        check("한글 단축키 확장", r == (len(han), "감사합니다. 좋은 하루 보내세요."), str(r))
+        check("지울 글자수=조합 길이", r[0] == len(han), f"{r[0]} vs {len(han)}")
+        # 앞에 다른 낱말이 있어도 마지막 낱말만 본다
+        th._cur[:] = list("dkssud rt")
+        check("마지막 낱말만 확장", th._alias_expand_for() == (len(han), "감사합니다. 좋은 하루 보내세요."), str(th._alias_expand_for()))
+        # 영문 단축키(영문 모드): compose 불일치 -> 원문 매칭, 지울 글자수=원문 길이
+        th._cur[:] = list("sig")
+        check("영문 단축키 확장", th._alias_expand_for() == (3, "홍길동 드림"), str(th._alias_expand_for()))
+        # 단축키가 아니면 None
+        th._cur[:] = list("dkssud")
+        check("비단축키는 확장 안 함", th._alias_expand_for() is None, str(th._alias_expand_for()))
+        # 낱말이 단축키를 '포함'만 해선 안 됨(정확 일치만)
+        th._cur[:] = list("sigabc")
+        check("부분 일치 제외", th._alias_expand_for() is None, str(th._alias_expand_for()))
+    finally:
+        th.SNIPPET_ALIAS.clear(); th.SNIPPET_ALIAS.update(old_alias)
+        th._cur[:] = old_cur
+
+def test_do_expand_sequence():
+    import tempfile
+    calls = {"bs": 0, "typed": [], "enter": 0, "vpaste": 0}
+    class FakeKBD:
+        def type(self, t): calls["typed"].append(t)
+        def press(self, k):
+            n = getattr(k, "name", "")
+            if "backspace" in n: calls["bs"] += 1
+            if "enter" in n: calls["enter"] += 1
+            if k == "v": calls["vpaste"] += 1
+        def release(self, k): pass
+    oldKBD, oldPC, oldUP, oldcur = th.KBD, th.pyperclip, th.USAGE_PATH, list(th._cur)
+    th.KBD = FakeKBD(); th.pyperclip = None   # 타이핑 경로 강제
+    th.USAGE_PATH = os.path.join(tempfile.gettempdir(), "th_usage_exp.json")
+    try:
+        th._injecting = False; th._cur = list("rt")
+        th.do_expand(2, "안녕", False)
+        check("확장: 백스페이스 dellen만큼", calls["bs"] == 2, str(calls))
+        check("확장: 문구+스페이스 타이핑", calls["typed"] == ["안녕", " "], str(calls["typed"]))
+        check("확장: 엔터 없음", calls["enter"] == 0)
+        check("확장 후 _injecting 해제", th._injecting is False)
+        check("확장 후 _cur 비움", th._cur == [])
+        # 엔터 트리거 + 긴 문구(클립보드 없음 -> 타이핑 경로): 스페이스 대신 엔터
+        calls["bs"] = 0; calls["typed"] = []; calls["enter"] = 0
+        th.do_expand(3, "안녕하세요 반갑습니다", True)
+        check("엔터 트리거: 엔터 전송", calls["enter"] == 1, str(calls))
+        check("엔터 트리거: 스페이스 미전송", " " not in calls["typed"], str(calls["typed"]))
+        # 긴 문구 + 클립보드 있음 -> 붙여넣기 경로, 트리거 스페이스는 타이핑
+        calls.update({"bs": 0, "typed": [], "enter": 0, "vpaste": 0})
+        class FakePC:
+            def __init__(self): self._c = "orig"
+            def paste(self): return self._c
+            def copy(self, t): self._c = t
+        th.pyperclip = FakePC()
+        th.do_expand(2, "아주 긴 문장 삽입 테스트", False)
+        check("긴 문구: 붙여넣기 경로", calls["vpaste"] >= 1 and calls["typed"] == [" "], str(calls))
+        check("긴 문구: 클립보드 원복", th.pyperclip.paste() == "orig", th.pyperclip.paste())
+    finally:
+        th.KBD = oldKBD; th.pyperclip = oldPC; th.USAGE_PATH = oldUP; th._cur = oldcur
+        try: os.remove(os.path.join(tempfile.gettempdir(), "th_usage_exp.json"))
+        except Exception: pass
+
 def main():
     for fn in [test_compose, test_boundary_midword, test_phrase_start_priority,
                test_dedup_and_cap, test_short_input_suppressed, test_latin_fallback,
@@ -552,7 +622,8 @@ def main():
                test_long_insert_clipboard, test_pin_ranking, test_placeholder_nav,
                test_maxsug_runtime, test_import_export, test_sorted_for_display,
                test_clean_old_logs, test_dir_size, test_split_sentences, test_extract_candidates,
-               test_snippets_parse, test_recent_pool, test_recent_boost_match]:
+               test_snippets_parse, test_recent_pool, test_recent_boost_match,
+               test_alias_autoexpand, test_do_expand_sequence]:
         print(f"[{fn.__name__}]"); fn()
     n = len(_results); p = sum(1 for _, ok, _ in _results if ok)
     print(f"\n결과: {p}/{n} PASS")
